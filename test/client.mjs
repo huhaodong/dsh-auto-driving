@@ -114,6 +114,18 @@ const controller = {
 	},
 };
 
+// Auto-mode namespace controller (the merged tab's full-auto pane + pill wiring).
+const autoSets = [];
+let autoSnapshot = {};
+const autoController = {
+	getSnapshot: () => ({ status: "ready", writable: true, mode: "host", value: autoSnapshot }),
+	subscribe: () => () => {},
+	set: async (key, value) => {
+		autoSets.push({ key, value });
+		autoSnapshot = { ...autoSnapshot, [key]: value };
+	},
+};
+
 const dictionaries = new Map();
 const t = (key) => dictionaries.get("model-fallback")?.zh?.[key] ?? key;
 
@@ -146,11 +158,10 @@ exports.apply({
 });
 const sectionsByName = new Map(sections.map((entry) => [entry.spec.name, entry]));
 const fallbackSection = sectionsByName.get("settings.section") && sections.find((entry) => entry.spec.id === "model-fallback");
-const autoSection = sections.find((entry) => entry.spec.id === "model-fallback-auto");
 const composerButton = sections.find((entry) => entry.spec.name === "conversation.input.right");
-assert(sections.length === 3, `all three slots registered (${sections.length})`);
-assert(fallbackSection !== undefined && fallbackSection.spec.order === 20, "fallback tab registered with order 20");
-assert(autoSection !== undefined && autoSection.spec.order === 21, "full-auto tab registered with order 21");
+assert(sections.length === 2, `merged settings tab + composer pill registered (${sections.length})`);
+assert(fallbackSection !== undefined && fallbackSection.spec.order === 20, "merged settings tab registered with order 20");
+assert(fallbackSection.spec.label() === "自动驾驶", "merged tab uses the rootNav label (no separate full-auto tab)");
 assert(composerButton !== undefined && composerButton.spec.id === "model-fallback-auto-drive", "auto-drive pill registered in the composer input bar");
 assert(t("retrySection") === "任务重试", "zh dictionary carries the retry section strings");
 //#endregion
@@ -233,12 +244,27 @@ function findAllByTag(root, tag) {
 //#endregion
 
 //#region scenarios
-const outer = mount(fallbackSection.component, { controller, api: {}, t });
+const outer = mount(fallbackSection.component, { controller, autoController, api: {}, t });
 const tree = outer.render();
 
 // 1. outer section renders its core surface
 assert(textOf(tree).join("").includes("模型供应商分组自动回退"), "fallback section renders the title");
 assert(textOf(tree).join("").includes("刷新中…"), "fallback section renders the loading refresh button");
+
+// 1b. sub-menu bar: four function panes, only the active one visible
+assert(findByText(tree, "回退分组") !== null, "sub-menu bar shows the groups tab");
+assert(findByText(tree, "任务重试") !== null, "sub-menu bar shows the retry tab");
+assert(findByText(tree, "运行状态") !== null, "sub-menu bar shows the status tab");
+assert(findByText(tree, "全自动模式") !== null, "sub-menu bar shows the full-auto tab");
+const panesOf = (root) => findAllByTag(root, "div").filter((el) => typeof el.props.className === "string" && el.props.className.includes("dshmfb-tabPane"));
+assert(panesOf(tree).length === 4, `four function panes rendered (${panesOf(tree).length})`);
+assert(panesOf(tree).filter((el) => el.props.className.includes("dshmfb-tabPaneOff")).length === 3, "three panes hidden while groups is active");
+const tabButtons = findAllByTag(tree, "button").filter((el) => typeof el.props.className === "string" && el.props.className.includes("dshmfb-tab"));
+assert(tabButtons.length === 4, `sub-menu bar has four tab buttons (${tabButtons.length})`);
+tabButtons[3].props.onClick();
+const switched = panesOf(outer.render());
+assert(switched.length === 4 && !switched[3].props.className.includes("dshmfb-tabPaneOff") && switched.filter((el) => el.props.className.includes("dshmfb-tabPaneOff")).length === 3, "clicking the full-auto tab switches the visible pane");
+tabButtons[0].props.onClick();
 
 // 2. the retry card is present as a nested function component
 const retryElement = (() => {
@@ -345,7 +371,7 @@ assert(findByText(readonlyTree, "恢复默认").props.disabled === true, "read-o
 
 // ===== fallback tab: runtime status card =====
 {
-	const mountFallback = mount(fallbackSection.component, { controller, api: {}, t });
+	const mountFallback = mount(fallbackSection.component, { controller, autoController, api: {}, t });
 	const parts = invokeFnElements(mountFallback.render(), 3);
 	const statusText = textOf(parts).join("");
 
@@ -422,7 +448,7 @@ assert(findByText(readonlyTree, "恢复默认").props.disabled === true, "read-o
 		},
 	};
 
-	const arrearsMount = mount(fallbackSection.component, { controller: arrearsController, api: catalogApi, t });
+	const arrearsMount = mount(fallbackSection.component, { controller: arrearsController, autoController, api: catalogApi, t });
 	arrearsMount.runEffects(); // fires the catalog load effect
 	await new Promise((resolve) => setTimeout(resolve, 10)); // let loadCatalog settle
 	let arrearsTree = arrearsMount.render();
@@ -561,7 +587,7 @@ assert(findByText(readonlyTree, "恢复默认").props.disabled === true, "read-o
 		};
 	};
 
-	const logTabMount = mount(fallbackSection.component, { controller, api: {}, t });
+	const logTabMount = mount(fallbackSection.component, { controller, autoController, api: {}, t });
 	const parts = invokeFnElements(logTabMount.render(), 3);
 	let logCardElement = null;
 	for (const part of parts) {
@@ -592,22 +618,31 @@ assert(findByText(readonlyTree, "恢复默认").props.disabled === true, "read-o
 	delete globalThis.fetch;
 }
 
-// ===== full-auto tab =====
-const autoSets = [];
-let autoSnapshot = {};
-const autoController = {
-	getSnapshot: () => ({ status: "ready", writable: true, mode: "host", value: autoSnapshot }),
-	subscribe: () => () => {},
-	set: async (key, value) => {
-		autoSets.push({ key, value });
-		autoSnapshot = { ...autoSnapshot, [key]: value };
-	},
-};
-
+// ===== full-auto (now a pane inside the merged settings tab) =====
+let autoSectionComponent = null;
 {
-	// Render exactly the way the settings page does: { controller, t } only —
-	// writability must come from the scope snapshot, not a prop.
-	const autoMount = mount(autoSection.component, { controller: autoController, t });
+	// AutoModeSection lives INSIDE the merged tab; locate its function element
+	// in the merged tree, then mount it standalone exactly the way the settings
+	// page does: { controller, t } only — writability comes from the snapshot.
+	const mergedMount = mount(fallbackSection.component, { controller, autoController, api: {}, t });
+	const mergedParts = invokeFnElements(mergedMount.render(), 3);
+	for (const part of mergedParts) {
+		if (autoSectionComponent) break;
+		walk(part, (element) => {
+			if (autoSectionComponent || typeof element.tag !== "function") return;
+			const st = { cells: [], index: 0, effects: [], rerender: () => {} };
+			const previous = hookState;
+			hookState = st;
+			try {
+				const subtree = element.tag(element.props);
+				if (textOf(subtree).join("").includes("全自动模式（默认允许）")) autoSectionComponent = element.tag;
+			} finally {
+				hookState = previous;
+			}
+		});
+	}
+	assert(autoSectionComponent !== null, "auto section found inside the merged tab tree");
+	const autoMount = mount(autoSectionComponent, { controller: autoController, t });
 	const partsOf = () => invokeFnElements(autoMount.render());
 	const autoText = textOf(partsOf()).join("");
 
@@ -641,7 +676,7 @@ const autoController = {
 
 {
 	// Read-only connection: the SNAPSHOT (not a prop) disables the surface.
-	const readonlyAuto = mount(autoSection.component, {
+	const readonlyAuto = mount(autoSectionComponent, {
 		controller: { getSnapshot: () => ({ status: "ready", writable: false, mode: "remote", value: autoSnapshot }), subscribe: () => () => {}, set: async () => {} },
 		t,
 	});

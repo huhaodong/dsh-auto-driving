@@ -2,7 +2,7 @@
 <html lang="zh-CN"><head><meta charset="utf-8"><link rel="stylesheet" href="base.css"></head>
 <body>
 <div class="window">
-  <div class="titlebar"><span class="tl tl-r"></span><span class="tl tl-y"></span><span class="tl tl-g"></span><span class="tb-title">DSH Desktop — 设置 · 模型回退</span></div>
+  <div class="titlebar"><span class="tl tl-r"></span><span class="tl tl-y"></span><span class="tl tl-g"></span><span class="tb-title">DSH Desktop — 设置 · 自动驾驶</span></div>
   <div class="layout">
     <div class="sidebar">
       <div class="sb-group">设置</div>
@@ -10,11 +10,10 @@
       <div class="sb-item"><span class="ico" style="background:#8f6fd8"></span>外观</div>
       <div class="sb-item"><span class="ico" style="background:#4fae7c"></span>模型</div>
       <div class="sb-item"><span class="ico" style="background:#d89f4f"></span>插件</div>
-      <div class="sb-item active"><span class="ico" style="background:#4f7cff"></span>模型回退</div>
-      <div class="sb-item"><span class="ico" style="background:#4fb8d8"></span>全自动模式</div>
+      <div class="sb-item active"><span class="ico" style="background:#4f7cff"></span>自动驾驶</div>
     </div>
     <div class="content"><div class="content-inner">
-      <div class="section-label" style="margin-top:0">任务重试</div>
+      <div class="tabs"><span class="tab">回退分组</span><span class="tab on">任务重试</span><span class="tab">运行状态</span><span class="tab">全自动模式</span></div>
       <div class="card">
         <div class="row">
           <span class="toggle"><span class="cb">✓</span>启用任务重试</span>
@@ -38,23 +37,7 @@
         <p class="hint">TRANSPORT / NETWORK_ERROR / TIMEOUT / CONNECTION_CLOSED 四类传输层瞬态错误始终可重试，不受列表限制；402 欠费（钱包级失败）立即跳到下一账户，不消耗重试预算。</p>
       </div>
 
-      <div class="section-label">工作日志</div>
-      <div class="card">
-        <div class="row">
-          <span class="card-title" style="margin:0">插件最近的介入记录</span>
-          <span style="flex:1"></span>
-          <span class="btn">刷新</span>
-          <span class="toggle" style="font-size:12px"><span class="cb">✓</span>自动刷新(5s)</span>
-        </div>
-        <div class="log">
-          <div class="log-row"><span class="log-time">14:02:11</span><span class="log-lv info">INFO</span><span class="log-msg">model-fallback: engaged for deepseek/deepseek-chat, chain=5 candidate(s)</span></div>
-          <div class="log-row warn"><span class="log-time">14:02:14</span><span class="log-lv warn">WARN</span><span class="log-msg">model-fallback: deepseek/deepseek-chat failed (RATE_LIMITED: 429 too many requests); switching to deepseek/deepseek-reasoner</span></div>
-          <div class="log-row"><span class="log-time">14:02:15</span><span class="log-lv info">INFO</span><span class="log-msg">model-fallback: request recovered on deepseek/deepseek-reasoner after 1 switch(es)</span></div>
-          <div class="log-row warn"><span class="log-time">13:47:02</span><span class="log-lv warn">WARN</span><span class="log-msg">model-fallback: account "modlens" rejected (QUOTA); skipping its remaining 4 candidate(s)</span></div>
-          <div class="log-row"><span class="log-time">13:47:03</span><span class="log-lv info">INFO</span><span class="log-msg">model-fallback: request recovered on openrouter/anthropic/claude-sonnet-4 after 2 switch(es)</span></div>
-        </div>
-      </div>
-    </div></div>
+</div></div>
   </div>
 </div>
 </body></html>
