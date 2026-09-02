@@ -519,11 +519,14 @@ assert(findByText(readonlyTree, "恢复默认").props.disabled === true, "read-o
 		const button = buttons[0];
 		assert(button.props["aria-pressed"] === false, `${label} half starts unpressed`);
 		assert(button.props.disabled === false, `${label} half is clickable on a writable connection`);
+		assert(typeof button.props["data-tip"] === "string" && button.props["data-tip"].length > 0, `${label} half carries a hover tooltip (data-tip)`);
+		assert(/点击关闭|点击开启|turn off|turn on/i.test(button.props["data-tip"]), `${label} half tooltip explains function and state`);
 
 		await button.props.onClick();
 		const afterOn = halfMount.render();
 		const onButton = findAllByTag(afterOn, "button")[0];
 		assert(onButton.props["aria-pressed"] === true, `${label} half flips to pressed after a click`);
+		assert(onButton.props["data-tip"] !== button.props["data-tip"], `${label} half tooltip reflects the toggled state`);
 
 		await onButton.props.onClick();
 		const afterOff = halfMount.render();
