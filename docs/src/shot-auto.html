@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="zh-CN"><head><meta charset="utf-8"><link rel="stylesheet" href="base.css"></head>
+<body>
+<div class="window">
+  <div class="titlebar"><span class="tl tl-r"></span><span class="tl tl-y"></span><span class="tl tl-g"></span><span class="tb-title">DSH Desktop — 设置</span></div>
+  <div class="layout">
+    <div class="sidebar">
+      <div class="sb-group">设置</div>
+      <div class="sb-item"><span class="ico" style="background:#5b87d8"></span>通用</div>
+      <div class="sb-item"><span class="ico" style="background:#8f6fd8"></span>外观</div>
+      <div class="sb-item"><span class="ico" style="background:#4fae7c"></span>模型</div>
+      <div class="sb-item"><span class="ico" style="background:#d89f4f"></span>插件</div>
+      <div class="sb-item"><span class="ico" style="background:#4f7cff"></span>模型回退</div>
+      <div class="sb-item active"><span class="ico" style="background:#4fb8d8"></span>全自动模式</div>
+    </div>
+    <div class="content"><div class="content-inner">
+      <h1 class="pg-title">全自动模式（默认允许）</h1>
+      <p class="pg-desc">开启后，任务运行中的权限索取、确认提问、方案评审都会按默认允许自动应答，任务不再等待人工验证。每次自动允许的操作会写入会话工作区的 AUTO-MODE.md 审计文件，随时可查插件允许了什么。默认关闭。</p>
+
+      <div class="row" style="margin-top:14px">
+        <span class="toggle"><span class="cb">✓</span>启用全自动模式</span>
+        <span class="badge ok">已启用</span>
+      </div>
+
+      <div class="card" style="margin-top:14px">
+        <div class="row"><span class="toggle"><span class="cb">✓</span>自动允许权限审批</span><span class="hint" style="flex:1">工具执行所需的权限审批（如命令沙箱提权、文件写入确认）一律按允许处理</span></div>
+        <div style="border-top:1px solid rgba(255,255,255,.07);padding-top:10px" class="row"><span class="toggle"><span class="cb">✓</span>自动应答确认提问</span><span class="hint" style="flex:1">ask_user_question 等人工选择按推荐项（第一个选项）自动应答</span></div>
+        <div style="border-top:1px solid rgba(255,255,255,.07);padding-top:10px" class="row"><span class="toggle"><span class="cb">✓</span>自动批准方案评审</span><span class="hint" style="flex:1">exit_plan_mode 提交的实施方案按「批准」自动通过，评审不再等待人工</span></div>
+        <div style="border-top:1px solid rgba(255,255,255,.07);padding-top:10px" class="row"><span class="toggle"><span class="cb">✓</span>工作区审计日志</span><span class="hint" style="flex:1">把每一次自动允许/自动应答追加到会话工作区根目录的 AUTO-MODE.md</span></div>
+      </div>
+
+      <div class="section-label">审计文件</div>
+      <div class="card">
+        <p class="card-desc" style="margin:0">会话工作区根目录下的 <span style="font-family:ui-monospace,Menlo,monospace;color:#b9c1cf">AUTO-MODE.md</span>（开启审计后自动创建）</p>
+        <div class="log" style="font-size:11px">
+          <div class="log-row"><span class="log-time">14:02:20</span><span class="log-lv info">审批</span><span class="log-msg">工具 bash — sandbox escalation to danger-full-access → 已自动允许</span></div>
+          <div class="log-row"><span class="log-time">14:02:35</span><span class="log-lv info">审批</span><span class="log-msg">工具 write — /workspace/src/config.yaml → 已自动允许</span></div>
+          <div class="log-row"><span class="log-time">14:03:01</span><span class="log-lv info">方案</span><span class="log-msg">Approve this plan and leave plan mode? → 已自动允许</span></div>
+        </div>
+      </div>
+    </div></div>
+  </div>
+</div>
+</body></html>

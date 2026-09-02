@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="zh-CN"><head><meta charset="utf-8"><link rel="stylesheet" href="base.css"></head>
+<body>
+<div class="window">
+  <div class="titlebar"><span class="tl tl-r"></span><span class="tl tl-y"></span><span class="tl tl-g"></span><span class="tb-title">DSH Desktop — 设置</span></div>
+  <div class="layout">
+    <div class="sidebar">
+      <div class="sb-group">设置</div>
+      <div class="sb-item"><span class="ico" style="background:#5b87d8"></span>通用</div>
+      <div class="sb-item"><span class="ico" style="background:#8f6fd8"></span>外观</div>
+      <div class="sb-item"><span class="ico" style="background:#4fae7c"></span>模型</div>
+      <div class="sb-item"><span class="ico" style="background:#d89f4f"></span>插件</div>
+      <div class="sb-item active"><span class="ico" style="background:#4f7cff"></span>模型回退</div>
+      <div class="sb-item"><span class="ico" style="background:#4fb8d8"></span>全自动模式</div>
+    </div>
+    <div class="content"><div class="content-inner">
+      <h1 class="pg-title">模型供应商分组自动回退</h1>
+      <p class="pg-desc">勾选参与循环的供应商（可排序）。当某次模型请求在产出任何内容之前失败（模型不存在、无可用凭据、额度耗尽、限流、上下文超限、服务端错误等），会自动切换到分组中的下一个模型继续同一个请求，直到找到可用模型，正在进行的任务无感继续。</p>
+
+      <div class="row" style="margin-top:14px">
+        <span class="toggle"><span class="cb">✓</span>启用自动回退</span>
+        <span class="badge ok">已启用</span>
+      </div>
+
+      <div class="section-label">回退分组</div>
+
+      <div class="card">
+        <div class="row">
+          <span class="order">1</span><span class="pname">deepseek</span><span class="pid">deepseek</span>
+          <span class="badge ok">3 模型</span>
+          <span style="flex:1"></span>
+          <span class="btn">上移</span><span class="btn">下移</span>
+        </div>
+        <div class="pool">
+          <span class="pool-label">模型池</span>
+          <span class="chip"><span class="cb">✓</span>deepseek-chat</span>
+          <span class="chip"><span class="cb">✓</span>deepseek-reasoner</span>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="row">
+          <span class="order">2</span><span class="pname">modlens</span><span class="pid">modlens</span>
+          <span class="badge err">欠费</span><span class="badge x">×</span>
+          <span class="badge ok">4 模型</span>
+          <span style="flex:1"></span>
+          <span class="btn">上移</span><span class="btn">下移</span>
+        </div>
+        <div class="hint">该账户/API key 近期触发欠费或鉴权失败，已自动移出回退池；点击 × 恢复</div>
+        <div class="pool">
+          <span class="pool-label">模型池</span>
+          <span class="chip" style="opacity:.5"><span class="cb off"></span>glm-4.6</span>
+          <span class="chip" style="opacity:.5"><span class="cb off"></span>glm-4.5-air</span>
+          <span class="chip"><span class="cb">✓</span>kimi-k2</span>
+          <span class="chip"><span class="cb">✓</span>deepseek-v3</span>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="row">
+          <span class="order">3</span><span class="pname">openrouter</span><span class="pid">openrouter</span>
+          <span class="badge ok">6 模型</span>
+          <span style="flex:1"></span>
+          <span class="btn">上移</span><span class="btn">下移</span>
+        </div>
+        <div class="pool">
+          <span class="pool-label">模型池</span>
+          <span class="chip"><span class="cb">✓</span>anthropic/claude-sonnet-4</span>
+          <span class="chip"><span class="cb">✓</span>google/gemini-2.0-flash</span>
+          <span class="chip" style="opacity:.6">+4</span>
+        </div>
+      </div>
+
+      <div class="section-label">运行状态</div>
+      <div class="card">
+        <div class="card-title">链预览</div>
+        <div class="chain">
+          <span class="node head">deepseek-chat</span><span class="arr">→</span>
+          <span class="node">deepseek-reasoner</span><span class="arr">→</span>
+          <span class="node" style="opacity:.55">kimi-k2（欠费跳过）</span><span class="arr">→</span>
+          <span class="node">deepseek-v3</span><span class="arr">→</span>
+          <span class="node">claude-sonnet-4</span>
+        </div>
+        <div class="row">
+          <span class="toggle"><span class="cb">✓</span>未选定分组也纳入保护</span>
+          <span class="hint">请求模型打头，选定分组作为候选池，任何请求都有恢复网</span>
+        </div>
+      </div>
+    </div></div>
+  </div>
+</div>
+</body></html>

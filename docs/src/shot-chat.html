@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="zh-CN"><head><meta charset="utf-8"><link rel="stylesheet" href="base.css"></head>
+<body>
+<div class="window" style="width:940px">
+  <div class="titlebar"><span class="tl tl-r"></span><span class="tl tl-y"></span><span class="tl tl-g"></span><span class="tb-title">DSH Desktop — 修复失败的测试用例</span></div>
+
+  <div style="padding:18px 26px 6px;display:flex;flex-direction:column;gap:14px;min-height:270px">
+    <div class="row" style="align-items:flex-start;gap:10px">
+      <span style="flex:none;width:24px;height:24px;border-radius:7px;background:#3a4150;display:inline-flex;align-items:center;justify-content:center;font-size:11px;color:#c3cad6">你</span>
+      <div style="font-size:13px;line-height:1.7;color:#e8eaf0;padding-top:2px">帮我把测试跑一遍，然后修复失败的用例。</div>
+    </div>
+
+    <div class="row" style="align-items:flex-start;gap:10px">
+      <span style="flex:none;width:24px;height:24px;border-radius:7px;background:rgba(79,124,255,.25);border:1px solid rgba(79,124,255,.5);display:inline-flex;align-items:center;justify-content:center;font-size:11px;color:#aebfff">AI</span>
+      <div style="flex:1;display:flex;flex-direction:column;gap:8px;min-width:0">
+        <div style="font-size:13px;line-height:1.7;color:#c3cad6">正在运行 <span style="font-family:ui-monospace,Menlo,monospace;font-size:12px">pnpm test</span>…</div>
+        <div style="display:inline-flex;align-items:center;gap:8px;width:fit-content;padding:6px 11px;border:1px solid rgba(255,255,255,.10);border-radius:8px;background:#1b1f27;font-size:11px;color:#8f97a6;cursor:pointer">
+          <span style="color:#e0a24c">⇄</span><span>已重试模型请求 · <b style="color:#c3cad6">deepseek-chat</b> → <b style="color:#c3cad6">deepseek-reasoner</b> → <b style="color:#c3cad6">openrouter/claude-sonnet-4</b></span>
+          <span style="color:#565d6b">2 次切换 ⌄</span>
+        </div>
+        <div style="font-size:13px;line-height:1.7;color:#c3cad6">✓ 21 个用例全部通过，已修复 <span style="font-family:ui-monospace,Menlo,monospace;font-size:12px">test/e2e.mjs</span> 中的超时断言。</div>
+      </div>
+    </div>
+  </div>
+
+  <div style="padding:0 26px 8px;display:flex;justify-content:center">
+    <span class="notify"><span class="dot"></span>模型已切换: deepseek-chat → openrouter/claude-sonnet-4</span>
+  </div>
+
+  <div style="padding:6px 26px 20px">
+    <div style="display:flex;align-items:flex-end;gap:10px;border:1px solid rgba(255,255,255,.12);border-radius:14px;background:#1b1f27;padding:10px 12px">
+      <span class="combo">
+        <span class="half on"><span class="dot"></span>自动驾驶</span>
+        <span class="half"><span style="color:#7f8896">⇄</span>模型回退</span>
+      </span>
+      <div style="flex:1;font-size:13px;color:#565d6b;padding:4px 2px">输入消息…（Shift+Enter 换行）</div>
+      <span style="flex:none;width:30px;height:30px;border-radius:50%;background:#4f7cff;display:inline-flex;align-items:center;justify-content:center;color:#fff;font-size:15px">↑</span>
+    </div>
+    <div class="hint" style="margin-top:8px;text-align:center">单击胶囊即可在主页直接开/关全自动模式，与设置页状态实时同步</div>
+  </div>
+</div>
+</body></html>
