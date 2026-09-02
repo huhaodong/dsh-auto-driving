@@ -1,0 +1,51 @@
+{
+  "name": "dsh-model-fallback",
+  "version": "0.3.2",
+  "description": "DeepSeek Harness plugin: pick configured model providers, and when a model fails with a model-related error the request automatically falls through the provider group's models (then the next selected provider) until one works, so the unfinished task keeps going. Adds its own Settings tab.",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./lib/client.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib/index.js",
+    "lib/client.js",
+    "cordis.patch.yml",
+    "README.md"
+  ],
+  "keywords": [
+    "deepseek-harness",
+    "dsh",
+    "dsh-plugin",
+    "model-fallback",
+    "failover",
+    "llm"
+  ],
+  "license": "MIT",
+  "scripts": {
+    "test": "node test/smoke.mjs && node test/client.mjs && node test/e2e.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@deepseek-ai/dsh-settings": "0.1.1-rc.2",
+    "@deepseek-ai/schemastery": "^3.18.1"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "cordis.patch.yml"
+    },
+    "client": {
+      "inject": [
+        "@deepseek-ai/dsh-client-runtime",
+        "@deepseek-ai/dsh-client-ui-settings",
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-connection"
+      ],
+      "platform": "web"
+    }
+  }
+}

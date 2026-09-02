@@ -1,0 +1,11 @@
+# dsh-model-fallback — 模型供应商分组自动回退 + 任务级同模型重试 + 全自动模式
+# 在选定的供应商分组内：某模型报错时自动切换到下一个候选模型继续流式输出，
+# 直到找到可用模型，agent 任务无感继续。设置界面新增独立标签页（模型回退）。
+# 所有开关状态保存在 settings 命名空间 `model-fallback`（回退/重试）与
+# `model-fallback-auto`（全自动模式），设置页可随时改。
+- insert:
+    - id: model-fallback
+      name: dsh-model-fallback
+      config:
+        enabled: true
+        providers: []
