@@ -643,6 +643,34 @@ const clearHealth = () => __clearHealthCache();
 	assert(passthrough === "ask-human", "auto-approval: gate off delegates to the host runtime");
 }
 
+{
+	// 19.
+	// Real-time toggle: flipping the fallback master switch between requests
+	// applies to the very next request — no re-arm, no reload. The wrap
+	// decision re-reads the resolved settings on every llm/stream event, and
+	// the loop-level recovery honours the master switch too.
+	clearHealth();
+	resolved.set("model-fallback", { enabled: true, providers: ["boom"], protectUnselected: true, allProvidersFallback: true, retry: { enabled: true, loopRetry: true, maxRetries: 3, baseDelayMs: 5, retryableCodes: DEFAULT_CODES } });
+	for (const watcher of watchers) watcher();
+	await new Promise((resolve) => setTimeout(resolve, 10));
+	scripts.set("boom/m1", () => ({ kind: "error", code: "AUTH_FAILED", message: "403 forbidden" }));
+	scripts.set("modlens-jiyuanlvdong/m-c", () => ({ kind: "error", code: "AUTH_FAILED", message: "403 forbidden" }));
+	scripts.set("modlens-openrouter/m-a", () => ({ kind: "ok", text: "wrapped while on" }));
+	const on = await agentTurn({ provider: "boom", model: "m1", sessionId: "sess-rt", messages: [] });
+	assert(on.ok && on.chunks.some((chunk) => chunk.type === "text-delta" && chunk.text === "wrapped while on"), "real-time: fallback on — failing model switches to the healthy candidate");
+	// Toggle OFF mid-task (what the composer pill write does): the next
+	// request surfaces the error untouched — no switching, no loop retry.
+	resolved.set("model-fallback", { ...resolved.get("model-fallback"), enabled: false });
+	const off = await agentTurn({ provider: "boom", model: "m1", sessionId: "sess-rt", messages: [] });
+	const offSession = sessionStore.get("sess-rt");
+	assert(!off.ok && off.failure?.code === "AUTH_FAILED", "real-time: fallback off — next request surfaces the error untouched");
+	assert(offSession !== undefined && offSession.events.every((event) => event.type !== "llm/retry"), "real-time: fallback off — loop-level recovery stays disarmed too");
+	// Toggle back ON: wrapped again immediately.
+	resolved.set("model-fallback", { ...resolved.get("model-fallback"), enabled: true });
+	const again = await agentTurn({ provider: "boom", model: "m1", sessionId: "sess-rt", messages: [] });
+	assert(again.ok && again.chunks.some((chunk) => chunk.type === "text-delta" && chunk.text === "wrapped while on"), "real-time: fallback on again — next request switches once more");
+}
+
 if (failures.length > 0) {
 	console.error(`E2E TEST FAILED (${failures.length})`);
 	process.exitCode = 1;

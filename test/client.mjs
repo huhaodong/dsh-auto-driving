@@ -712,7 +712,11 @@ let autoSectionComponent = null;
 			this.visible = false; // offsetParent proxy for composerBarForToast
 			this.hasTextarea = false; // composer marker
 			this.rect = { left: 100, top: 300, width: 600, height: 60 };
+			this.isConnected = true;
 			this.classes = new Set();
+		}
+		get clientWidth() {
+			return this.rect.width;
 		}
 		get classList() {
 			const classes = this.classes;
@@ -720,6 +724,13 @@ let autoSectionComponent = null;
 				add: (...names) => names.forEach((name) => classes.add(name)),
 				remove: (...names) => names.forEach((name) => classes.delete(name)),
 				contains: (name) => classes.has(name),
+				toggle: (name, force) => {
+					const has = classes.has(name);
+					const next = force === undefined ? !has : force;
+					if (next) classes.add(name);
+					else classes.delete(name);
+					return next;
+				},
 			};
 		}
 		get offsetParent() {
@@ -758,7 +769,7 @@ let autoSectionComponent = null;
 		head: new StubElement("head"),
 		body: new StubElement("body"),
 		createElement: (tag) => new StubElement(tag),
-		querySelector: () => null,
+		querySelector: (selector) => (selector === ".dshmfb-comboPill" ? pillEl : null),
 		querySelectorAll: (selector) => (selector === ".dshmfb-comboPill" ? [pillEl] : []),
 		getElementById(id) {
 			const find = (node) => {
@@ -806,6 +817,22 @@ let autoSectionComponent = null;
 	}
 	StubEventSource.instances = [];
 	globalThis.EventSource = StubEventSource;
+
+	// The responsive capsule watches the composer bar through a ResizeObserver;
+	// the stub records instances so tests can drive width changes manually.
+	class StubResizeObserver {
+		constructor(callback) {
+			this.callback = callback;
+			StubResizeObserver.instances.push(this);
+		}
+		observe() {}
+		disconnect() {}
+		emit() {
+			this.callback();
+		}
+	}
+	StubResizeObserver.instances = [];
+	globalThis.ResizeObserver = StubResizeObserver;
 
 	// Re-apply the plugin WITH a DOM: this arms the global toast feed through
 	// the SSE stub (the first apply() ran before any DOM existed).
@@ -909,11 +936,42 @@ let autoSectionComponent = null;
 	pill4.unmount();
 	assert(!hostVisible(), "bubble stays hidden with no conversation on screen");
 
+	// K. Full-auto notices read apart per channel: a plan review bubbles as
+	//    「已自动批准方案」— its own notice, distinct from a question answer.
+	const pill5 = mount(composerButton.component, { controller, autoController, t, sessionId: "session-5" });
+	pill5.runEffects();
+	feedSource.emit({ at: "2026-09-03T10:00:20.000Z", level: "warn", message: "auto-mode: 方案审批 auto-answered (Approve this plan and leave plan mode?); logged to AUTO-MODE.md", sessionId: "session-5" });
+	assert(hostVisible(), "the plan-review event bubbles on its own conversation page");
+	assert(hostText().includes("已自动批准方案"), `plan review shows its own notice (${hostText()})`);
+	assert(!hostText().includes("已自动应答确认提问"), "the plan notice is not the generic question notice");
+
+	// L. A long question detail is capped inside the bubble (the full text
+	//    stays in the log viewer and AUTO-MODE.md) so the pill keeps shape.
+	const longQuestion = "你".repeat(80);
+	feedSource.emit({ at: "2026-09-03T10:00:25.000Z", level: "warn", message: `auto-mode: 人工确认 auto-answered (${longQuestion}); logged to AUTO-MODE.md`, sessionId: "session-5" });
+	assert(hostText().includes("已自动应答确认提问") && hostText().includes("…"), `a long question detail is capped with an ellipsis (${hostText().length} chars)`);
+	assert(!hostText().includes(longQuestion), "the bubble never carries the full 80-char question");
+	pill5.unmount();
+
+	// M. Responsive capsule: a tight composer row drops the text labels and
+	//    keeps the dot / layers icon (compact class driven by the bar width).
+	const pill6 = mount(composerButton.component, { controller, autoController, t, sessionId: "session-6" });
+	pill6.runEffects();
+	composerEl.rect = { left: 100, top: 300, width: 900, height: 60 };
+	StubResizeObserver.instances.at(-1).emit();
+	assert(!pillEl.classes.has("dshmfb-comboCompact"), "a wide composer keeps the text labels visible");
+	composerEl.rect = { left: 100, top: 300, width: 500, height: 60 };
+	StubResizeObserver.instances.at(-1).emit();
+	assert(pillEl.classes.has("dshmfb-comboCompact"), "a narrow composer switches the capsule to icon-only compact mode");
+	pill6.unmount();
+	assert(!pillEl.classes.has("dshmfb-comboCompact"), "unmount clears the compact class");
+
 	//#endregion teardown
 	delete globalThis.document;
 	delete globalThis.requestAnimationFrame;
 	delete globalThis.cancelAnimationFrame;
 	delete globalThis.EventSource;
+	delete globalThis.ResizeObserver;
 	delete globalThis.fetch;
 }
 
