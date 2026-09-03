@@ -1,8 +1,11 @@
 <!DOCTYPE html>
 <html lang="zh-CN"><head><meta charset="utf-8"><link rel="stylesheet" href="base.css"></head>
 <body>
-<div class="window" style="width:940px">
+<div class="window" style="position:relative;width:940px">
   <div class="titlebar"><span class="tl tl-r"></span><span class="tl tl-y"></span><span class="tl tl-g"></span><span class="tb-title">DSH Desktop — 修复失败的测试用例</span></div>
+  <div style="position:absolute;top:54px;right:16px;z-index:5">
+    <span class="notify"><span class="dot"></span>模型已切换: deepseek-chat → openrouter/claude-sonnet-4</span>
+  </div>
 
   <div style="padding:18px 26px 6px;display:flex;flex-direction:column;gap:14px;min-height:270px">
     <div class="row" style="align-items:flex-start;gap:10px">
@@ -21,10 +24,6 @@
         <div style="font-size:13px;line-height:1.7;color:#c3cad6">✓ 21 个用例全部通过，已修复 <span style="font-family:ui-monospace,Menlo,monospace;font-size:12px">test/e2e.mjs</span> 中的超时断言。</div>
       </div>
     </div>
-  </div>
-
-  <div style="padding:0 26px 8px;display:flex;justify-content:center">
-    <span class="notify"><span class="dot"></span>模型已切换: deepseek-chat → openrouter/claude-sonnet-4</span>
   </div>
 
   <div style="padding:6px 26px 20px">
