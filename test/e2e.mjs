@@ -20,6 +20,9 @@
  * engagement, and chain exhaustion.
  */
 import { apply, __clearHealthCache } from "../lib/index.js";
+import { mkdtemp } from "node:fs/promises";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 
 const failures = [];
 const assert = (condition, message) => {
@@ -29,6 +32,20 @@ const assert = (condition, message) => {
 		failures.push(message);
 	}
 };
+
+/** Read the plugin's event ring through the registered /api/log route. */
+async function readRing() {
+	const handler = routes.get("/dsh-model-fallback/api/log");
+	if (typeof handler !== "function") throw new Error("log route not registered");
+	let body = null;
+	handler({ method: "GET" }, {
+		writeHead() {},
+		end(data) {
+			body = data;
+		},
+	});
+	return JSON.parse(body).events;
+}
 
 //#region faithful sessions service
 /** sessionId -> { events: [], appended: [], append(type,data), events.findLast works } */
@@ -170,7 +187,7 @@ const ctx = {
 	},
 	inject(deps, callback) {
 		if (Array.isArray(deps) && deps.includes("webServer")) {
-			callback({ ...ctx, webServer: { register: () => () => {} } });
+			callback({ ...ctx, webServer: { register: (route) => { routes.set(route.path, route.handler); return () => {}; } } });
 			return;
 		}
 		if (Array.isArray(deps) && deps.includes("sessions")) {
@@ -196,6 +213,8 @@ const ctx = {
 	},
 };
 const registered = new Map();
+/** Routes the plugin registered on the webServer ("/dsh-model-fallback/api/log" etc.). */
+const routes = new Map();
 const resolved = new Map([
 	[
 		"model-fallback",
@@ -588,6 +607,40 @@ const clearHealth = () => __clearHealthCache();
 	);
 	assert(retries[0].data.turn === 3 && retries[0].data.step === 3, "switch-visibility: rows attach to the live turn/step");
 	assert(/switching to /.test(retries[0].data.failure?.message ?? ""), "switch-visibility: each row names the model taking over");
+
+	// Session attribution: ring entries served at /api/log carry the sessionId
+	// of the conversation that produced them, so the client bubble feed can
+	// scope every bubble to one conversation page.
+	const ring = await readRing();
+	const switchEntry = ring.find((entry) => entry.message.includes("switching to"));
+	assert(switchEntry !== undefined, "session-attribution: switch entry present in the ring");
+	assert(switchEntry.sessionId === "sess-switch", `session-attribution: switch entry carries the requesting session id (${switchEntry.sessionId})`);
+	const recoveredSwitchEntry = ring.find((entry) => /request recovered on .+ after \d+ switch\(es\)/.test(entry.message));
+	assert(recoveredSwitchEntry?.sessionId === "sess-switch", `session-attribution: recovery entry carries the session id (${recoveredSwitchEntry?.sessionId})`);
+	const unattributed = ring.filter((entry) => entry.message.includes("fallback loop armed"));
+	assert(unattributed.length > 0 && unattributed.every((entry) => entry.sessionId === undefined), "session-attribution: host-level entries carry no session id");
+}
+
+{
+	// 18.
+	// Auto-mode approval gate: with full-auto on, an approval/request for a
+	// session is answered allowed-once AND the ring entry carries THAT
+	// session's id — the bubble then shows on that conversation page only.
+	clearHealth();
+	resolved.set("model-fallback-auto", { enabled: true, autoAllowPermissions: true, autoAnswerQuestions: true, autoApprovePlans: true });
+	const approvalListeners = allListeners.get("approval/request") ?? [];
+	assert(approvalListeners.length === 1, `auto-approval: gate registered (${approvalListeners.length})`);
+	const requestRoot = await mkdtemp(join(tmpdir(), "dshmfb-e2e-"));
+	const outcome = await approvalListeners[0]({ toolName: "write", reason: "e2e auto approval", agent: { session: { header: { id: "sess-approve", cwd: requestRoot } } } }, () => "ask-human");
+	assert(outcome === "allowed-once", "auto-approval: permission answered allowed-once");
+	const ring = await readRing();
+	const approvalEntry = ring.find((entry) => entry.message.includes(`permission for "write" auto-allowed`));
+	assert(approvalEntry !== undefined, "auto-approval: decision recorded in the ring");
+	assert(approvalEntry.sessionId === "sess-approve", `auto-approval: entry carries the requesting session id (${approvalEntry.sessionId})`);
+	// Gate off: the same request falls through to the host runtime untouched.
+	resolved.set("model-fallback-auto", { enabled: false });
+	const passthrough = await approvalListeners[0]({ toolName: "write", agent: { session: { header: { id: "sess-approve" } } } }, () => "ask-human");
+	assert(passthrough === "ask-human", "auto-approval: gate off delegates to the host runtime");
 }
 
 if (failures.length > 0) {

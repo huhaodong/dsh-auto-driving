@@ -80,7 +80,16 @@ function mount(component, props) {
 		// Run recorded mount effects once (React commits effects after mount).
 		runEffects: () => {
 			render();
-			for (const effect of [...state.effects]) effect?.();
+			state.cleanups = [];
+			for (const effect of [...state.effects]) {
+				const cleanup = effect?.();
+				if (typeof cleanup === "function") state.cleanups.push(cleanup);
+			}
+		},
+		// React runs effect cleanups in reverse order on unmount.
+		unmount: () => {
+			for (const cleanup of [...(state.cleanups ?? [])].reverse()) cleanup?.();
+			state.cleanups = [];
 		},
 	};
 }
@@ -684,6 +693,228 @@ let autoSectionComponent = null;
 	const boxes = findAllByTag(readonlyParts, "input").filter((input) => input.props.type === "checkbox");
 	assert(boxes.length === 5 && boxes.every((box) => box.props.disabled === true), "read-only connection disables every auto toggle");
 	assert(findByText(readonlyParts, "保存").props.disabled === true, "read-only connection disables auto save");
+}
+
+// ===== per-conversation toast bubble: session gating, switch replay, composer follow =====
+{
+	//#region minimal DOM + rAF + SSE stubs
+	class StubElement {
+		constructor(tag) {
+			this.tagName = tag;
+			this.children = [];
+			this.parentElement = null;
+			this.style = {};
+			this.dataset = {};
+			this.className = "";
+			this.id = "";
+			this.textContent = "";
+			this.offsetWidth = 0;
+			this.visible = false; // offsetParent proxy for composerBarForToast
+			this.hasTextarea = false; // composer marker
+			this.rect = { left: 100, top: 300, width: 600, height: 60 };
+			this.classes = new Set();
+		}
+		get classList() {
+			const classes = this.classes;
+			return {
+				add: (...names) => names.forEach((name) => classes.add(name)),
+				remove: (...names) => names.forEach((name) => classes.delete(name)),
+				contains: (name) => classes.has(name),
+			};
+		}
+		get offsetParent() {
+			return this.visible ? { stub: true } : null;
+		}
+		appendChild(child) {
+			child.parentElement = this;
+			this.children.push(child);
+			return child;
+		}
+		replaceChildren(...kids) {
+			this.children = kids;
+		}
+		querySelector(selector) {
+			if (selector === "textarea" && this.hasTextarea) return {};
+			for (const child of this.children) {
+				if (typeof child.querySelector === "function") {
+					const hit = child.querySelector(selector);
+					if (hit) return hit;
+				}
+			}
+			return null;
+		}
+		getBoundingClientRect() {
+			return this.rect;
+		}
+	}
+
+	const pillEl = new StubElement("div");
+	pillEl.className = "dshmfb-comboPill";
+	pillEl.visible = true;
+	const composerEl = new StubElement("div");
+	composerEl.hasTextarea = true;
+	composerEl.appendChild(pillEl);
+	const documentStub = {
+		head: new StubElement("head"),
+		body: new StubElement("body"),
+		createElement: (tag) => new StubElement(tag),
+		querySelector: () => null,
+		querySelectorAll: (selector) => (selector === ".dshmfb-comboPill" ? [pillEl] : []),
+		getElementById(id) {
+			const find = (node) => {
+				if (node.id === id) return node;
+				for (const child of node.children) {
+					const hit = find(child);
+					if (hit) return hit;
+				}
+				return null;
+			};
+			return find(this.body);
+		},
+	};
+	let frameSeq = 0;
+	let frameQueue = [];
+	globalThis.document = documentStub;
+	globalThis.requestAnimationFrame = (fn) => {
+		frameSeq += 1;
+		frameQueue.push({ id: frameSeq, fn });
+		return frameSeq;
+	};
+	globalThis.cancelAnimationFrame = (id) => {
+		frameQueue = frameQueue.filter((entry) => entry.id !== id);
+	};
+	const flushFrames = (count = 2) => {
+		for (let index = 0; index < count; index += 1) {
+			const queue = frameQueue;
+			frameQueue = [];
+			for (const entry of queue) entry.fn();
+		}
+	};
+
+	class StubEventSource {
+		constructor(url) {
+			this.url = url;
+			this.closed = false;
+			StubEventSource.instances.push(this);
+		}
+		close() {
+			this.closed = true;
+		}
+		emit(entry) {
+			this.onmessage?.({ data: JSON.stringify(entry) });
+		}
+	}
+	StubEventSource.instances = [];
+	globalThis.EventSource = StubEventSource;
+
+	// Re-apply the plugin WITH a DOM: this arms the global toast feed through
+	// the SSE stub (the first apply() ran before any DOM existed).
+	exports.apply({
+		effect(fn) {
+			return fn?.();
+		},
+		locale: {
+			register(ns, dict) {
+				dictionaries.set(ns, dict);
+			},
+			bind(ns) {
+				return (key) => dictionaries.get(ns)?.zh?.[key] ?? key;
+			},
+		},
+		get(service) {
+			if (service === "connection") return { api: {} };
+			if (service === "settingsScope") return { bind: () => controller };
+			return null;
+		},
+		slots: {
+			inject(_name, register) {
+				register();
+			},
+			register(spec, component) {
+				sections.push({ spec, component });
+			},
+		},
+	});
+	const feedSource = StubEventSource.instances.at(-1);
+	assert(feedSource?.url === "/dsh-model-fallback/api/events", "toast feed subscribes to the SSE event stream");
+	globalThis.fetch = async () => ({ ok: true, json: async () => ({ cap: 200, events: [] }) });
+
+	const nodeText = (node) => (node.children.length === 0 ? node.textContent ?? "" : node.children.map(nodeText).join(""));
+	const hostNode = () => documentStub.getElementById("dshmfb-toast-host");
+	const hostVisible = () => hostNode()?.dataset.visible === "1";
+	const hostText = () => {
+		const host = hostNode();
+		return host ? nodeText(host) : "";
+	};
+	//#endregion
+
+	// A. No conversation on screen: a session-tagged event stays dormant
+	//    (recorded for that conversation, never displayed).
+	feedSource.emit({ at: "2026-09-03T10:00:00.000Z", level: "warn", message: 'auto-mode: permission for "bash" auto-allowed; logged to AUTO-MODE.md', sessionId: "session-1" });
+	assert(!hostVisible(), "no bubble before any conversation page is on screen");
+
+	// B. The conversation page for session-1 mounts (its pill reports the
+	//    session id) -> its still-fresh status replays on enter, anchored to
+	//    the composer bar.
+	const pill1 = mount(composerButton.component, { controller, autoController, t, sessionId: "session-1" });
+	pill1.runEffects();
+	assert(hostVisible(), "bubble shows when its own conversation page is on screen");
+	assert(hostText().includes("已自动允许权限"), `bubble text is the auto-allowed notice (${hostText()})`);
+	assert(hostNode().style.left === "400px" && hostNode().style.top === "256px", `bubble anchors centered 44px above the composer (${hostNode().style.left}/${hostNode().style.top})`);
+
+	// C. A background conversation's event never leaks into session-1's page.
+	feedSource.emit({ at: "2026-09-03T10:00:05.000Z", level: "warn", message: "model-fallback: p/a failed (AUTH_FAILED: 403); switching to p/b", sessionId: "session-2" });
+	assert(hostText().includes("已自动允许权限") && !hostText().includes("模型已切换"), "another conversation's switch event does not replace the bubble");
+
+	// D. Switching to session-2 hides session-1's bubble and replays
+	//    session-2's OWN still-fresh status.
+	const pill2 = mount(composerButton.component, { controller, autoController, t, sessionId: "session-2" });
+	pill2.runEffects();
+	pill1.unmount();
+	assert(hostVisible(), "the new conversation's fresh status replays after the switch");
+	assert(hostText().includes("模型已切换: p/a → p/b"), `switch replay shows THAT conversation's switch (${hostText()})`);
+
+	// E. The bubble follows the composer when the layout moves it.
+	composerEl.rect = { left: 300, top: 500, width: 400, height: 60 };
+	flushFrames(2);
+	assert(hostNode().style.left === "500px" && hostNode().style.top === "456px", `bubble keeps its relative spot when the composer moves (${hostNode().style.left}/${hostNode().style.top})`);
+
+	// F. The conversation leaving the screen takes the bubble with it.
+	pillEl.visible = false;
+	flushFrames(2);
+	assert(!hostVisible(), "bubble hides when the composer disappears from the screen");
+	pillEl.visible = true;
+
+	// G. A conversation with no recorded status shows no bubble.
+	const pill3 = mount(composerButton.component, { controller, autoController, t, sessionId: "session-3" });
+	pill3.runEffects();
+	pill2.unmount();
+	assert(!hostVisible(), "no bubble on a conversation without a fresh status");
+
+	// H. An expired status (older than the 30 s window) does not replay.
+	feedSource.emit({ at: "2026-09-03T10:00:10.000Z", level: "warn", message: "model-fallback: request recovered on p/c after 1 switch(es)", sessionId: "session-4" });
+	const realNow = Date.now;
+	Date.now = () => realNow() + 31000;
+	const pill4 = mount(composerButton.component, { controller, autoController, t, sessionId: "session-4" });
+	pill4.runEffects();
+	pill3.unmount();
+	Date.now = realNow;
+	assert(!hostVisible(), "an expired status does not replay when entering its conversation");
+
+	// I. An unattributable event (no sessionId) never surfaces as a bubble.
+	feedSource.emit({ at: "2026-09-03T10:00:15.000Z", level: "warn", message: "model-fallback: x/y failed (AUTH_FAILED: 403); switching to z/w" });
+	assert(!hostVisible(), "an event without session attribution never displays");
+
+	// J. Leaving every conversation (settings page) keeps the bubble hidden.
+	pill4.unmount();
+	assert(!hostVisible(), "bubble stays hidden with no conversation on screen");
+
+	//#endregion teardown
+	delete globalThis.document;
+	delete globalThis.requestAnimationFrame;
+	delete globalThis.cancelAnimationFrame;
+	delete globalThis.EventSource;
+	delete globalThis.fetch;
 }
 
 if (failures.length > 0) {
