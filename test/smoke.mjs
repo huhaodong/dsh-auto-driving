@@ -711,6 +711,437 @@ assert(log.some(([, line]) => line.includes("loop-level retry listener armed")),
 }
 
 {
+	// 23c. same-model retry survives the re-check when only the MESSAGE makes
+	//      the failure transient (catch-all code outside the explicit list,
+	//      Chinese gateway text): the pre-fix re-check dropped the message and
+	//      gave up after retry 1.
+	__clearHealthCache();
+	failingModels.clear();
+	healthyModels.clear();
+	adapterStreamCalls.length = 0;
+	log.length = 0;
+	const origListModels23c = fakeLlm.listModels;
+	fakeLlm.listModels = async (provider) => (provider === "solo" ? [{ id: "m1", name: "M1" }] : origListModels23c(provider));
+	let soloCalls = 0;
+	const origAdapterStream23c = fakeLlm.adapterStream;
+	fakeLlm.adapterStream = function (options) {
+		if (`${options.provider}/${options.model}` === "solo/m1") {
+			soloCalls += 1;
+			if (soloCalls <= 2) {
+				return (async function* () {
+					yield failChunk("GATEWAY", "模型服务暂时不可用，请稍后重试");
+				})();
+			}
+			return (async function* () {
+				yield { type: "text-delta", text: "gateway recovered" };
+				yield { type: "finish", reason: { kind: "stop", usage: {} } };
+			})();
+		}
+		return origAdapterStream23c.call(fakeLlm, options);
+	};
+	resolved.set("model-fallback", { enabled: true, providers: ["solo"], retry: { enabled: true, maxRetries: 3, baseDelayMs: 5 } });
+	for (const watcher of watchers) watcher();
+	await new Promise((r) => setTimeout(r, 30));
+	const chunks23c = await drain(
+		request({ provider: "solo", model: "m1" }, (async function* () {
+			yield failChunk("GATEWAY", "模型服务暂时不可用，请稍后重试");
+		})()),
+	);
+	assert(chunks23c.some((c) => c.type === "text-delta" && c.text === "gateway recovered"), "message-only transient (Chinese text, catch-all code) recovers across same-model retries");
+	assert(soloCalls === 3, `retry re-check kept going until success (${soloCalls} dispatches)`);
+	assert(!log.some(([, line]) => line.includes("giving up")), "no premature give-up on the re-check");
+	fakeLlm.listModels = origListModels23c;
+	fakeLlm.adapterStream = origAdapterStream23c;
+	healthyModels.add("p1/m2");
+	healthyModels.add("p2/m1");
+	resolved.set("model-fallback", { enabled: true, providers: ["p1", "p2"] });
+	for (const watcher of watchers) watcher();
+	await new Promise((r) => setTimeout(r, 20));
+}
+
+{
+	// 23d. a wallet failure surfacing on retry 1 stops the same-model retry and
+	//      marks the account in arrears instead of burning the remaining budget.
+	__clearHealthCache();
+	failingModels.clear();
+	healthyModels.clear();
+	adapterStreamCalls.length = 0;
+	log.length = 0;
+	const origListModels23d = fakeLlm.listModels;
+	fakeLlm.listModels = async (provider) => (provider === "solo" ? [{ id: "m1", name: "M1" }] : origListModels23d(provider));
+	let soloCalls23d = 0;
+	const origAdapterStream23d = fakeLlm.adapterStream;
+	fakeLlm.adapterStream = function (options) {
+		if (`${options.provider}/${options.model}` === "solo/m1") {
+			soloCalls23d += 1;
+			if (soloCalls23d === 1) {
+				return (async function* () {
+					yield failChunk("GATEWAY", "模型服务暂时不可用，请稍后重试");
+				})();
+			}
+			return (async function* () {
+				yield failChunk("PI_AI_ERROR", "402 status code (no body)");
+			})();
+		}
+		return origAdapterStream23d.call(fakeLlm, options);
+	};
+	resolved.set("model-fallback", { enabled: true, providers: ["solo"], retry: { enabled: true, maxRetries: 3, baseDelayMs: 5 } });
+	for (const watcher of watchers) watcher();
+	await new Promise((r) => setTimeout(r, 30));
+	const chunks23d = await drain(
+		request({ provider: "solo", model: "m1" }, (async function* () {
+			yield failChunk("GATEWAY", "模型服务暂时不可用，请稍后重试");
+		})()),
+	);
+	assert(chunks23d.length === 1 && chunks23d[0].reason.kind === "error", "wallet failure on retry terminates the same-model loop");
+	assert(soloCalls23d === 2, `no retry after an account-level failure (${soloCalls23d} dispatches)`);
+	let stored23d = resolved.get("model-fallback");
+	for (let i = 0; i < 50 && stored23d?.arrears?.solo !== true; i += 1) {
+		await new Promise((r) => setTimeout(r, 20));
+		stored23d = resolved.get("model-fallback");
+	}
+	assert(stored23d?.arrears?.solo === true, "mid-retry wallet failure persists the arrears marker");
+	fakeLlm.listModels = origListModels23d;
+	fakeLlm.adapterStream = origAdapterStream23d;
+	healthyModels.add("p1/m2");
+	healthyModels.add("p2/m1");
+	resolved.set("model-fallback", { enabled: true, providers: ["p1", "p2"] });
+	for (const watcher of watchers) watcher();
+	await new Promise((r) => setTimeout(r, 20));
+}
+
+{
+	// 23e. turn keep-alive: a turn that died to a transient model-service
+	//      failure gets a 「继续」 user message injected into the conversation.
+	__clearHealthCache();
+	resolved.set("model-fallback", { enabled: true, providers: ["p1", "p2"], retry: { enabled: true, maxRetries: 1, baseDelayMs: 5, keepAlive: { enabled: true, delayMs: 10, maxDelayMs: 20 } } });
+	for (const watcher of watchers) watcher();
+	await new Promise((r) => setTimeout(r, 20));
+	const errorListeners = ctx.listeners.get("agent/error") ?? [];
+	assert(errorListeners.length >= 1, "agent/error listener registered for keep-alive");
+	const sessionEventListeners = ctx.listeners.get("session/event") ?? [];
+	assert(sessionEventListeners.length >= 1, "session/event listener registered for streak reset");
+	const kaListener = errorListeners.at(-1);
+	const resetListener = sessionEventListeners.at(-1);
+	const followups = [];
+	const agent = {
+		id: "agent-ka-1",
+		status: "idle",
+		inbox: { hasPending: false, nextTurn: [], nextStep: [] },
+		followup(message) {
+			followups.push(message);
+		},
+	};
+	const deadTurnError = () => Object.assign(new Error("模型服务暂时不可用，请稍后重试"), { failure: { code: "PI_AI_ERROR", message: "模型服务暂时不可用，请稍后重试" } });
+	kaListener({ agent, error: deadTurnError() });
+	assert(followups.length === 0, "keep-alive waits out the backoff delay before injecting");
+	await new Promise((r) => setTimeout(r, 60));
+	assert(followups.length === 1, "keep-alive injects 继续 after the delay");
+	assert(followups[0]?.content?.[0]?.text === "继续", "injected message says 继续");
+	assert(followups[0]?.role === "user" && followups[0]?.source?.plugin === "model-fallback", "injected message is a plugin-sourced user message");
+	assert(log.some(([, line]) => line.includes("auto-keepalive") && line.includes("sent 「继续」")), "keep-alive injection logged");
+
+	// Backoff: the next failure doubles the delay; a completed turn resets the
+	// streak and disarms the pending timer.
+	kaListener({ agent, error: deadTurnError() });
+	await new Promise((r) => setTimeout(r, 5));
+	resetListener({ id: agent.id }, { type: "turn/end", data: { reason: { kind: "completed" } } });
+	await new Promise((r) => setTimeout(r, 60));
+	assert(followups.length === 1, "a completed turn resets the streak and cancels the pending keep-alive");
+	kaListener({ agent, error: deadTurnError() });
+	await new Promise((r) => setTimeout(r, 60));
+	assert(followups.length === 2, "post-reset failure re-arms the keep-alive at the base delay");
+}
+
+{
+	// 23f. keep-alive stop conditions: aborts, wallet failures, deterministic
+	//      model errors, all-arrears pools, disabled toggles, and busy agents
+	//      never receive a 继续.
+	const mkAgent = (id, overrides = {}) => ({
+		id,
+		status: "idle",
+		inbox: { hasPending: false, nextTurn: [], nextStep: [] },
+		followup() {
+			throw new Error("followup must not be called");
+		},
+		...overrides,
+	});
+	const kaListener23f = (ctx.listeners.get("agent/error") ?? []).at(-1);
+	const transientError = Object.assign(new Error("模型服务暂时不可用，请稍后重试"), { failure: { code: "PI_AI_ERROR", message: "模型服务暂时不可用，请稍后重试" } });
+
+	// aborted turn: surfaced, never kept alive
+	kaListener23f({ agent: mkAgent("ka-abort"), error: { failure: { code: "ABORTED", message: "user aborted" } } });
+	// wallet failure: the arrears machinery owns it
+	kaListener23f({ agent: mkAgent("ka-402"), error: { failure: { code: "PI_AI_ERROR", message: "402 status code (no body)" } } });
+	// deterministic model error: 继续 cannot fix it
+	kaListener23f({ agent: mkAgent("ka-model"), error: { failure: { code: "CONTEXT_OVERFLOW", message: "prompt too long" } } });
+	// coarse retryable code wrapping a deterministic message: the permanent
+	// family is screened off the haystack even when the code list would retry it
+	kaListener23f({ agent: mkAgent("ka-overflow-wrap"), error: { failure: { code: "PI_AI_ERROR", message: "context length exceeded, please shorten" } } });
+	await new Promise((r) => setTimeout(r, 60));
+	assert(log.filter(([, line]) => line.includes("sent 「继续」")).length === 2, "aborts/wallet/model errors never trigger keep-alive");
+	assert(log.filter(([, line]) => line.includes("followup failed")).length === 0, "deterministic failures are never even scheduled (no followup attempt)");
+
+	// all selected accounts in arrears: the pool itself is dead — say so and stop
+	resolved.set("model-fallback", { enabled: true, providers: ["p1", "p2"], arrears: { p1: true, p2: true }, retry: { enabled: true, keepAlive: { enabled: true, delayMs: 10, maxDelayMs: 20 } } });
+	for (const watcher of watchers) watcher();
+	await new Promise((r) => setTimeout(r, 20));
+	kaListener23f({ agent: mkAgent("ka-arrears"), error: transientError });
+	await new Promise((r) => setTimeout(r, 60));
+	assert(log.some(([, line]) => line.includes("auto-keepalive") && line.includes("all 2 selected provider account(s) are in arrears")), "all-arrears pool logs the stop reason");
+	assert(log.filter(([, line]) => line.includes("sent 「继续」")).length === 2, "all-arrears pool never receives 继续");
+
+	// keep-alive toggle off
+	resolved.set("model-fallback", { enabled: true, providers: ["p1", "p2"], retry: { enabled: true, keepAlive: { enabled: false, delayMs: 10, maxDelayMs: 20 } } });
+	for (const watcher of watchers) watcher();
+	await new Promise((r) => setTimeout(r, 20));
+	kaListener23f({ agent: mkAgent("ka-off"), error: transientError });
+	await new Promise((r) => setTimeout(r, 60));
+	assert(log.filter(([, line]) => line.includes("sent 「继续」")).length === 2, "keep-alive off never injects");
+
+	// busy agent: the loop is already driving — no injection on top of it
+	resolved.set("model-fallback", { enabled: true, providers: ["p1", "p2"], retry: { enabled: true, keepAlive: { enabled: true, delayMs: 10, maxDelayMs: 20 } } });
+	for (const watcher of watchers) watcher();
+	await new Promise((r) => setTimeout(r, 20));
+	kaListener23f({ agent: mkAgent("ka-busy", { status: "running" }), error: transientError });
+	await new Promise((r) => setTimeout(r, 60));
+	assert(log.filter(([, line]) => line.includes("sent 「继续」")).length === 2, "busy agents are never interrupted by keep-alive");
+
+	resolved.set("model-fallback", { enabled: true, providers: ["p1", "p2"] });
+	for (const watcher of watchers) watcher();
+	await new Promise((r) => setTimeout(r, 20));
+}
+
+{
+	// 23g. templated wake-up text + retryablePatterns override: `continueText`
+	//      placeholders ({code}/{status}/{errorCount}) are filled from the failure
+	//      facts, and a literal fragment forces a permanent-class error to count
+	//      as recoverable (dsh-auto-continue's retryableErrorPatterns family).
+	__clearHealthCache();
+	resolved.set("model-fallback", {
+		enabled: true,
+		providers: ["p1", "p2"],
+		retry: {
+			enabled: true,
+			keepAlive: {
+				enabled: true,
+				delayMs: 10,
+				maxDelayMs: 20,
+				continueText: "继续 ({code} 第{errorCount}次 HTTP{status})",
+				retryablePatterns: "invalid request",
+			},
+		},
+	});
+	for (const watcher of watchers) watcher();
+	await new Promise((r) => setTimeout(r, 20));
+	const kaListener23g = (ctx.listeners.get("agent/error") ?? []).at(-1);
+	const followups23g = [];
+	const agent23g = {
+		id: "ka-tpl",
+		status: "idle",
+		inbox: { hasPending: false, nextTurn: [], nextStep: [] },
+		followup(message) {
+			followups23g.push(message);
+		},
+	};
+	// A permanent-class failure (invalid request) that builtin classification
+	// rejects — but the configured literal fragment forces it recoverable.
+	const invalidRequest = Object.assign(new Error("invalid request body"), { failure: { code: "INVALID_REQUEST", message: "invalid request body", status: 400 } });
+	kaListener23g({ agent: agent23g, error: invalidRequest });
+	assert(followups23g.length === 0, "templated keep-alive waits out the backoff delay");
+	await new Promise((r) => setTimeout(r, 60));
+	assert(followups23g.length === 1, "retryablePatterns forces the permanent-class failure to be kept alive");
+	assert(followups23g[0]?.content?.[0]?.text === "继续 (INVALID_REQUEST 第1次 HTTP400)", `template placeholders fill from failure facts (${followups23g[0]?.content?.[0]?.text})`);
+	assert(log.some(([, line]) => line.includes("auto-keepalive") && line.includes("sent 「继续 (INVALID_REQUEST 第1次")), "templated injection logged");
+
+	// Same session, second failure: {errorCount} ascends with the streak.
+	kaListener23g({ agent: agent23g, error: invalidRequest });
+	await new Promise((r) => setTimeout(r, 60));
+	assert(followups23g.length === 2, "second templated keep-alive fires");
+	assert(followups23g[1]?.content?.[0]?.text === "继续 (INVALID_REQUEST 第2次 HTTP400)", "errorCount placeholder ascends per consecutive failure");
+}
+
+{
+	// 23h. maxConsecutive cap: after N consecutive continues the keep-alive
+	//      stands down until an error-free turn resets the budget.
+	__clearHealthCache();
+	resolved.set("model-fallback", {
+		enabled: true,
+		providers: ["p1", "p2"],
+		retry: { enabled: true, keepAlive: { enabled: true, delayMs: 10, maxDelayMs: 20, maxConsecutive: 2 } },
+	});
+	for (const watcher of watchers) watcher();
+	await new Promise((r) => setTimeout(r, 20));
+	const kaListener23h = (ctx.listeners.get("agent/error") ?? []).at(-1);
+	const resetListener23h = (ctx.listeners.get("session/event") ?? []).at(-1);
+	const followups23h = [];
+	const agent23h = {
+		id: "ka-cap",
+		status: "idle",
+		inbox: { hasPending: false, nextTurn: [], nextStep: [] },
+		followup(message) {
+			followups23h.push(message);
+		},
+	};
+	const transient = () => Object.assign(new Error("模型服务暂时不可用，请稍后重试"), { failure: { code: "PI_AI_ERROR", message: "模型服务暂时不可用，请稍后重试" } });
+	kaListener23h({ agent: agent23h, error: transient() });
+	await new Promise((r) => setTimeout(r, 60));
+	assert(followups23h.length === 1, "first continue within the maxConsecutive budget");
+	kaListener23h({ agent: agent23h, error: transient() });
+	await new Promise((r) => setTimeout(r, 60));
+	assert(followups23h.length === 2, "second continue within the budget");
+	// Third failure exceeds the cap: standing down until an error-free turn.
+	kaListener23h({ agent: agent23h, error: transient() });
+	await new Promise((r) => setTimeout(r, 60));
+	assert(followups23h.length === 2, "third failure exceeds maxConsecutive — no further continue");
+	assert(log.some(([, line]) => line.includes("auto-keepalive") && line.includes("reached 2 consecutive 继续")), "cap exhaustion logged");
+	// An error-free turn resets the budget; the next failure continues again.
+	resetListener23h({ id: agent23h.id }, { type: "turn/end", data: { reason: { kind: "completed" } } });
+	kaListener23h({ agent: agent23h, error: transient() });
+	await new Promise((r) => setTimeout(r, 60));
+	assert(followups23h.length === 3, "an error-free turn resets the budget and the next failure continues");
+}
+
+{
+	// 23i. guardTools idempotency guard: the wake-up message steers the model
+	//      based on the last tool call — unconfirmed result (pending) vs
+	//      confirmed success (done) — and stays plain when guardTools is off.
+	__clearHealthCache();
+	resolved.set("model-fallback", {
+		enabled: true,
+		providers: ["p1", "p2"],
+		retry: { enabled: true, keepAlive: { enabled: true, delayMs: 10, maxDelayMs: 20, guardTools: true } },
+	});
+	for (const watcher of watchers) watcher();
+	await new Promise((r) => setTimeout(r, 20));
+	const kaListener23i = (ctx.listeners.get("agent/error") ?? []).at(-1);
+	const sessionListener23i = (ctx.listeners.get("session/event") ?? []).at(-1);
+	const followups23i = [];
+	const agent23i = {
+		id: "ka-guard",
+		status: "idle",
+		inbox: { hasPending: false, nextTurn: [], nextStep: [] },
+		followup(message) {
+			followups23i.push(message);
+		},
+	};
+	const transient = () => Object.assign(new Error("模型服务暂时不可用，请稍后重试"), { failure: { code: "PI_AI_ERROR", message: "模型服务暂时不可用，请稍后重试" } });
+	// A tool call happened but its result never arrived (pending): the guard
+	// must warn "may not have completed, verify state, do not re-run".
+	sessionListener23i({ id: agent23i.id }, { type: "tool/call", data: { name: "bash", callId: "c1" } });
+	kaListener23i({ agent: agent23i, error: transient() });
+	await new Promise((r) => setTimeout(r, 60));
+	assert(followups23i.length === 1, "guarded keep-alive fires after a pending tool call");
+	assert(followups23i[0]?.content?.[0]?.text.includes("可能未完成") && followups23i[0]?.content?.[0]?.text.includes("bash"), "pending guard text names the tool and warns about unconfirmed state");
+	assert(followups23i[0]?.content?.[0]?.text.includes("不要重复执行"), "pending guard tells the model not to re-run");
+	assert(log.some(([, line]) => line.includes("auto-keepalive") && line.includes("sent 「继续 (上一步工具「bash」")), "guarded injection logged");
+
+	// A tool call that completed successfully (done): guard says "already done".
+	const agentDone = { id: "ka-guard-done", status: "idle", inbox: { hasPending: false, nextTurn: [], nextStep: [] }, followup(message) { followups23i.push(message); } };
+	sessionListener23i({ id: agentDone.id }, { type: "tool/call", data: { name: "git", callId: "c2" } });
+	sessionListener23i({ id: agentDone.id }, { type: "tool/result", data: { message: { content: [{ type: "tool-result", content: [{ type: "text", text: "pushed ok" }] }] } } });
+	kaListener23i({ agent: agentDone, error: transient() });
+	await new Promise((r) => setTimeout(r, 60));
+	assert(followups23i.length === 2, "guarded keep-alive fires after a completed tool call");
+	assert(followups23i[1]?.content?.[0]?.text.includes("已完成") && followups23i[1]?.content?.[0]?.text.includes("pushed ok"), "done guard names the tool, the result, and says not to re-run");
+
+	// guardTools off: the message stays the plain template.
+	resolved.set("model-fallback", {
+		enabled: true,
+		providers: ["p1", "p2"],
+		retry: { enabled: true, keepAlive: { enabled: true, delayMs: 10, maxDelayMs: 20, guardTools: false } },
+	});
+	for (const watcher of watchers) watcher();
+	await new Promise((r) => setTimeout(r, 20));
+	const kaListener23iOff = (ctx.listeners.get("agent/error") ?? []).at(-1);
+	const agentPlain = { id: "ka-guard-off", status: "idle", inbox: { hasPending: false, nextTurn: [], nextStep: [] }, followup(message) { followups23i.push(message); } };
+	sessionListener23i({ id: agentPlain.id }, { type: "tool/call", data: { name: "rm", callId: "c3" } });
+	kaListener23iOff({ agent: agentPlain, error: transient() });
+	await new Promise((r) => setTimeout(r, 60));
+	assert(followups23i[2]?.content?.[0]?.text === "继续", "guardTools off keeps the wake-up text plain");
+}
+
+{
+	// 23j. max-tokens wake-up: a turn that ends at the output-token cap schedules
+	//      a continue with the dedicated continueTextMaxTokens template.
+	__clearHealthCache();
+	resolved.set("model-fallback", {
+		enabled: true,
+		providers: ["p1", "p2"],
+		retry: { enabled: true, keepAlive: { enabled: true, delayMs: 10, maxDelayMs: 20, continueTextMaxTokens: "继续输出，不要重复已生成的内容" } },
+	});
+	for (const watcher of watchers) watcher();
+	await new Promise((r) => setTimeout(r, 20));
+	const kaListener23j = (ctx.listeners.get("agent/error") ?? []).at(-1);
+	const sessionListener23j = (ctx.listeners.get("session/event") ?? []).at(-1);
+	const followups23j = [];
+	const agent23j = {
+		id: "ka-maxtok",
+		status: "idle",
+		inbox: { hasPending: false, nextTurn: [], nextStep: [] },
+		followup(message) {
+			followups23j.push(message);
+		},
+	};
+	// The max-tokens path resolves the live agent through the agents service.
+	const originalGet = ctx.get.bind(ctx);
+	ctx.get = (name) => (name === "agents" ? { get: (id) => (id === agent23j.id ? agent23j : undefined) } : originalGet(name));
+	try {
+		sessionListener23j({ id: agent23j.id }, { type: "turn/end", data: { reason: { kind: "max-tokens" } } });
+		assert(followups23j.length === 0, "max-tokens wake waits out the backoff delay");
+		await new Promise((r) => setTimeout(r, 60));
+		assert(followups23j.length === 1, "max-tokens turn ending schedules a continue");
+		assert(followups23j[0]?.content?.[0]?.text === "继续输出，不要重复已生成的内容", "max-tokens wake uses continueTextMaxTokens");
+		// A completed turn resets the streak; another max-tokens end wakes again.
+		sessionListener23j({ id: agent23j.id }, { type: "turn/end", data: { reason: { kind: "completed" } } });
+		sessionListener23j({ id: agent23j.id }, { type: "turn/end", data: { reason: { kind: "max-tokens" } } });
+		await new Promise((r) => setTimeout(r, 60));
+		assert(followups23j.length === 2, "post-reset max-tokens end re-wakes the session");
+	} finally {
+		ctx.get = originalGet;
+	}
+}
+
+{
+	// 23k. progress resets: an error-free turn (completed/aborted/blocked)
+	//      disarms the pending keep-alive timer and zeroes the streak.
+	__clearHealthCache();
+	resolved.set("model-fallback", {
+		enabled: true,
+		providers: ["p1", "p2"],
+		retry: { enabled: true, keepAlive: { enabled: true, delayMs: 10, maxDelayMs: 20 } },
+	});
+	for (const watcher of watchers) watcher();
+	await new Promise((r) => setTimeout(r, 20));
+	const kaListener23k = (ctx.listeners.get("agent/error") ?? []).at(-1);
+	const resetListener23k = (ctx.listeners.get("session/event") ?? []).at(-1);
+	const followups23k = [];
+	const agent23k = {
+		id: "ka-reset2",
+		status: "idle",
+		inbox: { hasPending: false, nextTurn: [], nextStep: [] },
+		followup(message) {
+			followups23k.push(message);
+		},
+	};
+	const transient = () => Object.assign(new Error("模型服务暂时不可用，请稍后重试"), { failure: { code: "PI_AI_ERROR", message: "模型服务暂时不可用，请稍后重试" } });
+	// Two consecutive failures -> streak 2; then a blocked turn resets the streak.
+	kaListener23k({ agent: agent23k, error: transient() });
+	await new Promise((r) => setTimeout(r, 60));
+	kaListener23k({ agent: agent23k, error: transient() });
+	await new Promise((r) => setTimeout(r, 60));
+	assert(followups23k.length === 2, "two consecutive failures keep alive twice");
+	kaListener23k({ agent: agent23k, error: transient() });
+	await new Promise((r) => setTimeout(r, 5));
+	resetListener23k({ id: agent23k.id }, { type: "turn/end", data: { reason: { kind: "blocked" } } });
+	await new Promise((r) => setTimeout(r, 60));
+	assert(followups23k.length === 2, "a blocked turn disarms the pending keep-alive");
+	kaListener23k({ agent: agent23k, error: transient() });
+	await new Promise((r) => setTimeout(r, 60));
+	assert(followups23k.length === 3, "post-reset failure continues at the base delay again");
+}
+
+{
 	// 24. log system: the ring buffer captures events and the /dsh-model-fallback/api/log
 	//     route serves them as newest-first JSON.
 	const webServerRoutes = [];

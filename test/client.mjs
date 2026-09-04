@@ -107,7 +107,7 @@ assert(typeof exports.apply === "function", "client exports apply()");
 //#endregion
 
 //#region host-side stubs
-const DEFAULT_CODES = ["NETWORK_ERROR", "TIMEOUT", "CONNECTION_CLOSED", "RATE_LIMITED", "SERVER_ERROR", "500", "502", "503", "504"];
+const DEFAULT_CODES = ["NETWORK_ERROR", "TIMEOUT", "CONNECTION_CLOSED", "RATE_LIMITED", "SERVER_ERROR", "SERVER", "RATE_LIMIT", "PI_AI_ERROR", "500", "502", "503", "504"];
 let snapshotValue = {
 	enabled: true,
 	providers: ["p1"],
@@ -302,15 +302,19 @@ assert(firstText.includes("单次上限 10 秒"), "base delay hint present");
 assert(firstText.includes("UNKNOWN_MODEL"), "codes hint lists the known model errors");
 
 const numbers = findAllByTag(first, "input").filter((input) => input.props.type === "number");
-assert(numbers.length === 4, `four numeric inputs rendered (${numbers.length})`);
-assert(numbers[0].props.value === 3 && numbers[1].props.value === 500 && numbers[2].props.value === 300000 && numbers[3].props.value === 2, "numeric inputs show stored values (3 retries / 500 ms / 300000 idle / 2 resends)");
+assert(numbers.length === 8, `eight numeric inputs rendered (${numbers.length})`);
+assert(numbers[0].props.value === 3 && numbers[1].props.value === 500 && numbers[2].props.value === 300000 && numbers[3].props.value === 2 && numbers[4].props.value === 5000 && numbers[5].props.value === 60000 && numbers[6].props.value === 2 && numbers[7].props.value === 0, "numeric inputs show stored values (3 retries / 500 ms / 300000 idle / 2 resends / 5000 wake / 60000 cap / backoff 2 / max consecutive 0)");
 
-const codesInputOf = (root) => findAllByTag(root, "input").find((input) => input.props.type === "text");
+const codesInputOf = (root) => findAllByTag(root, "input").find((input) => input.props.type === "text" && String(input.props.className ?? "").includes("dshmfb-retryCodesInput"));
 assert(codesInputOf(first).props.value === "NETWORK_ERROR", "codes input shows the stored code list");
 const retryBoxes = findAllByTag(first, "input").filter((input) => input.props.type === "checkbox");
-assert(retryBoxes.length === 3, `retry card has master + loop-retry + watchdog toggles (${retryBoxes.length})`);
+assert(retryBoxes.length === 5, `retry card has master + loop-retry + watchdog + keep-alive + guard toggles (${retryBoxes.length})`);
 assert(retryBoxes[1].props.checked === true, "loop-level retry defaults on");
 assert(retryBoxes[2].props.checked === true, "liveness watchdog defaults on");
+assert(retryBoxes[3].props.checked === true, "turn keep-alive defaults on");
+assert(retryBoxes[4].props.checked === true, "keep-alive idempotency guard defaults on");
+assert(findByText(first, "轮次保活（继续唤醒）") !== null, "keep-alive toggle label present");
+assert(firstText.includes("「本轮运行失败」"), "keep-alive description names the turn-error boundary");
 assert(textOf(first).join("").includes("整轮重发"), "loop-retry hint explains the whole-request re-issue");
 assert(findByText(first, "重试间隔: 500ms → 1s → 2s") !== null, "backoff preview shows the computed schedule");
 assert(findByText(first, "保存").props.disabled === true, "save disabled before any edit");
@@ -332,6 +336,7 @@ assert(
 	retrySave.value.maxRetries === 5 && retrySave.value.enabled === true && retrySave.value.baseDelayMs === 500,
 	"saved retry policy keeps enabled/maxRetries/baseDelayMs",
 );
+assert(retrySave.value.keepAlive && retrySave.value.keepAlive.enabled === true && retrySave.value.keepAlive.delayMs === 5000 && retrySave.value.keepAlive.maxDelayMs === 60000, "saved retry policy round-trips the keep-alive defaults");
 assert(JSON.stringify(retrySave.value.retryableCodes) === JSON.stringify(["NETWORK_ERROR"]), "saved retry policy keeps the code list");
 assert(findByText(saved, "保存").props.disabled === true, "save disables again after persisting");
 
@@ -373,7 +378,7 @@ const readonly = mount(retryElement.tag, { ...retryElement.props, writable: fals
 const readonlyTree = readonly.render();
 const readonlyInputs = findAllByTag(readonlyTree, "input");
 const disabledInputs = readonlyInputs.filter((input) => input.props.disabled === true);
-assert(readonlyInputs.length === 8 && disabledInputs.length === 8, `read-only connection disables every retry control (${disabledInputs.length}/${readonlyInputs.length})`);
+assert(readonlyInputs.length === 16 && disabledInputs.length === 16, `read-only connection disables every retry control (${disabledInputs.length}/${readonlyInputs.length})`);
 assert(findByText(readonlyTree, "保存").props.disabled === true, "read-only connection disables save");
 assert(findByText(readonlyTree, "恢复默认").props.disabled === true, "read-only connection disables restore defaults");
 //#endregion
