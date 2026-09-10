@@ -1187,6 +1187,167 @@ assert(log.some(([, line]) => line.includes("loop-level retry listener armed")),
 	delete ctx.webServer;
 }
 
+{
+	// 25. per-conversation toggles (会话隔离): the composer pill's overrides pin
+	//     ONE conversation's modes through /api/session-state; other
+	//     conversations keep following the global default, and subagent
+	//     sessions inherit their root conversation's state.
+	const webServerRoutes = [];
+	const originalInject = ctx.inject.bind(ctx);
+	ctx.inject = (deps, callback) => {
+		if (Array.isArray(deps) && deps.includes("webServer")) {
+			callback({ ...ctx, webServer: { register(route) { webServerRoutes.push(route); return () => {}; } } });
+			return;
+		}
+		return originalInject(deps, callback);
+	};
+	// parentSession links so the override walk can resolve subagent lineage.
+	const parentLinks = new Map([["sub-a1", "conv-a"], ["sub-a2", "conv-a"], ["sub-b1", "conv-b"]]);
+	ctx.sessions = { get: (id) => (parentLinks.has(id) ? { header: { parentSession: parentLinks.get(id) } } : undefined) };
+	apply(ctx, { enabled: true, providers: ["p1", "p2"] });
+	await new Promise((r) => setTimeout(r, 20));
+
+	const route = webServerRoutes.find((entry) => entry.path === "/dsh-model-fallback/api/session-state");
+	assert(route !== undefined && route.kind === "exact", "session-state route registered at /dsh-model-fallback/api/session-state");
+
+	const jsonChunks = () => {
+		const chunks = [];
+		return { chunks, response: { writeHead: (code, headers) => chunks.push({ code, headers }), end: (body) => chunks.push({ body }) } };
+	};
+	const makePostRequest = (raw, remote = "127.0.0.1") => {
+		const listeners = { data: [], end: [], error: [] };
+		const req = {
+			method: "POST",
+			socket: { remoteAddress: remote },
+			on(event, fn) {
+				listeners[event].push(fn);
+				return req;
+			},
+		};
+		queueMicrotask(() => {
+			for (const fn of listeners.data) fn(raw);
+			for (const fn of listeners.end) fn();
+		});
+		return req;
+	};
+	/** Drive one POST through the route and wait for its async body handling. */
+	const postSessionState = async (payload, remote = "127.0.0.1") => {
+		const { chunks, response } = jsonChunks();
+		route.handler(makePostRequest(typeof payload === "string" ? payload : JSON.stringify(payload), remote), response);
+		await new Promise((resolve) => setTimeout(resolve, 5));
+		return chunks;
+	};
+
+	// GET without a sessionId -> 400.
+	{
+		const { chunks, response } = jsonChunks();
+		route.handler({ method: "GET", url: "/dsh-model-fallback/api/session-state" }, response);
+		assert(chunks[0]?.code === 400, "GET without sessionId answers 400");
+	}
+	// GET for an unknown conversation: no override, effective = global defaults.
+	{
+		const { chunks, response } = jsonChunks();
+		route.handler({ method: "GET", url: "/dsh-model-fallback/api/session-state?sessionId=conv-a" }, response);
+		const payload = JSON.parse(chunks[1].body);
+		assert(chunks[0]?.code === 200 && payload.sessionId === "conv-a", "GET answers the conversation snapshot");
+		assert(payload.modes.auto === null && payload.modes.fallback === null, "unknown conversation carries no overrides");
+		assert(payload.effective.fallback === true && payload.effective.auto === false, "effective state follows the global defaults");
+	}
+	// POST pins conv-a's fallback OFF (loopback); validation + trust guard.
+	{
+		const chunks = await postSessionState({ sessionId: "conv-a", fallback: false });
+		const payload = JSON.parse(chunks[1].body);
+		assert(chunks[0]?.code === 200 && payload.modes.fallback === false && payload.modes.auto === null, "POST pins the conversation's fallback off");
+		assert(payload.effective.fallback === false, "effective fallback follows the pin");
+	}
+	{
+		const chunks = await postSessionState({ fallback: false });
+		assert(chunks[0]?.code === 400, "POST without sessionId answers 400");
+	}
+	{
+		const chunks = await postSessionState({ sessionId: "conv-a", fallback: "yes" });
+		assert(chunks[0]?.code === 400, "POST with a non-boolean mode answers 400");
+	}
+	{
+		const chunks = await postSessionState({ sessionId: "conv-a", fallback: true }, "10.0.0.7");
+		assert(chunks[0]?.code === 403, "POST from a non-loopback address answers 403");
+	}
+
+	// Conversation-isolated gating: conv-a passes through untouched while
+	// conv-b and the subagents of OTHER conversations stay wrapped.
+	const failingStream = (chunksToYield) =>
+		(async function* () {
+			for (const chunk of chunksToYield) yield chunk;
+		})();
+	{
+		const chunks = await drain(request({ provider: "other", model: "m1", sessionId: "conv-a" }, failingStream([failChunk("UNKNOWN_MODEL", "no such model other/m1")])));
+		assert(chunks.length === 1 && chunks[0].reason.kind === "error", "fallback pinned off: the pinned conversation's request surfaces the error untouched");
+		assert(log.some(([, line]) => line.includes("fallback disabled for this conversation")), "session-off decision logged");
+		const chunksB = await drain(request({ provider: "other", model: "m1", sessionId: "conv-b" }, failingStream([{ type: "text-delta", text: "hello from p1/m2" }, { type: "finish", reason: { kind: "stop", usage: {} } }])));
+		assert(chunksB.some((chunk) => chunk.type === "text-delta" && chunk.text === "hello from p1/m2"), "another conversation still recovers through the fallback chain");
+		const chunksSubB = await drain(request({ provider: "other", model: "m1", sessionId: "sub-b1" }, failingStream([{ type: "text-delta", text: "hello from p1/m2" }, { type: "finish", reason: { kind: "stop", usage: {} } }])));
+		assert(chunksSubB.some((chunk) => chunk.type === "text-delta"), "a subagent of the unpinned conversation still recovers");
+	}
+	// Subagent inheritance: conv-a's subagent follows conv-a's pin.
+	{
+		const chunks = await drain(request({ provider: "other", model: "m1", sessionId: "sub-a1" }, failingStream([failChunk("UNKNOWN_MODEL", "no such model other/m1")])));
+		assert(chunks.length === 1 && chunks[0].reason.kind === "error", "a subagent of the pinned conversation inherits its override");
+	}
+	// Pin conv-a back on: its own and its subagent's requests recover again.
+	{
+		const chunks = await postSessionState({ sessionId: "conv-a", fallback: true });
+		assert(chunks[0]?.code === 200 && JSON.parse(chunks[1].body).modes.fallback === true, "POST pins the conversation's fallback back on");
+		const chunksRecovered = await drain(request({ provider: "other", model: "m1", sessionId: "sub-a1" }, failingStream([{ type: "text-delta", text: "hello from p1/m2" }, { type: "finish", reason: { kind: "stop", usage: {} } }])));
+		assert(chunksRecovered.some((chunk) => chunk.type === "text-delta"), "clearing the pin re-arms the fallback for the conversation's subagent");
+	}
+	// Both-null clears the entry entirely (follow global again).
+	{
+		const chunks = await postSessionState({ sessionId: "conv-a", auto: null, fallback: null });
+		const payload = JSON.parse(chunks[1].body);
+		assert(chunks[0]?.code === 200 && payload.modes.auto === null && payload.modes.fallback === null, "nulling both modes clears the conversation's entry");
+	}
+	// Per-conversation full-auto under the global gate (设置界面总闸): with the
+	// master switch OFF, even a pinned-on conversation stays manual — the
+	// capsule half is hidden client-side and the host refuses to act on the
+	// stale pin.
+	{
+		const chunks = await postSessionState({ sessionId: "conv-a", auto: true });
+		assert(chunks[0]?.code === 200, "POST pins the conversation's autopilot on");
+		const pinned = JSON.parse(chunks[1].body);
+		assert(pinned.modes.auto === true && pinned.effective.auto === false, "global auto off: the pin is stored but the effective mode stays off (master gate)");
+		const freshApproval = approvalListeners.at(-1);
+		const outcome = await freshApproval({ agent: { session: { header: { id: "conv-a", cwd: undefined } } }, toolName: "bash" }, async () => "unavailable");
+		assert(outcome === "unavailable", "global autopilot off: the pinned conversation's approval stays manual");
+	}
+	// With the master switch ON, the capsule isolates conversations: conv-a
+	// (pinned on) auto-approves, an unpinned conversation follows the global
+	// default, a pinned-off conversation stays manual, and subagents inherit
+	// their root conversation's pin.
+	{
+		resolved.set("model-fallback-auto", { enabled: true, autoAllowPermissions: true, autoAnswerQuestions: true, autoApprovePlans: true });
+		const freshApproval = approvalListeners.at(-1);
+		const outcomeA = await freshApproval({ agent: { session: { header: { id: "conv-a", cwd: undefined } } }, toolName: "bash" }, async () => "unavailable");
+		assert(outcomeA === "allowed-once", "global autopilot on: the pinned-on conversation auto-approves");
+		const outcomeB = await freshApproval({ agent: { session: { header: { id: "conv-b", cwd: undefined } } }, toolName: "bash" }, async () => "unavailable");
+		assert(outcomeB === "allowed-once", "global autopilot on: an unpinned conversation follows the global default");
+		const chunks = await postSessionState({ sessionId: "conv-b", auto: false });
+		assert(chunks[0]?.code === 200 && JSON.parse(chunks[1].body).effective.auto === false, "POST pins the second conversation's autopilot off");
+		const outcomeBOff = await freshApproval({ agent: { session: { header: { id: "conv-b", cwd: undefined } } }, toolName: "bash" }, async () => "unavailable");
+		assert(outcomeBOff === "unavailable", "the pinned-off conversation keeps manual approval");
+		const outcomeSubA = await freshApproval({ agent: { session: { header: { id: "sub-a2", parentSession: "conv-a", cwd: undefined } } }, toolName: "bash" }, async () => "unavailable");
+		assert(outcomeSubA === "allowed-once", "the pinned-on conversation's subagent inherits the autopilot pin");
+		const outcomeSubB = await freshApproval({ agent: { session: { header: { id: "sub-b1", parentSession: "conv-b", cwd: undefined } } }, toolName: "bash" }, async () => "unavailable");
+		assert(outcomeSubB === "unavailable", "the pinned-off conversation's subagent inherits the opt-out");
+		resolved.set("model-fallback-auto", { enabled: false });
+	}
+	// Persistence: the override map reached the settings document.
+	{
+		const stored = resolved.get("model-fallback")?.sessionModes;
+		assert(stored !== undefined && typeof stored === "object", "per-session modes persisted into the settings document");
+	}
+	delete ctx.sessions;
+}
+
 assert(name === "model-fallback", "plugin name exported");
 console.log(process.exitCode ? "SMOKE TEST FAILED" : "SMOKE TEST PASSED");
 //#endregion

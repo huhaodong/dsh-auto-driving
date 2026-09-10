@@ -527,6 +527,11 @@ assert(findByText(readonlyTree, "恢复默认").props.disabled === true, "read-o
 				snapshot = { ...snapshot, [key]: value };
 				for (const listener of [...listeners]) listener();
 			},
+			// Settings-page equivalent: flip the global master switch and notify.
+			setGlobal(enabled) {
+				snapshot = { ...snapshot, enabled };
+				for (const listener of [...listeners]) listener();
+			},
 		};
 	};
 
@@ -535,50 +540,76 @@ assert(findByText(readonlyTree, "恢复默认").props.disabled === true, "read-o
 	const fallbackPillController = makeController(fallbackSets);
 	const autoPillController = makeController(autoSets);
 
-	// The registration's inject() wires both controllers; exercise directly.
-	const pillMount = mount(composerButton.component, { controller: fallbackPillController, autoController: autoPillController, t });
-	pillMount.runEffects(); // activates the snapshot subscriptions
-	const pillTree = pillMount.render();
+	// A. Global gate: both settings switches off -> the capsule is not offered.
+	const pillOff = mount(composerButton.component, { controller: fallbackPillController, autoController: autoPillController, t });
+	pillOff.runEffects();
+	assert(pillOff.render() === null, "both global switches off: the capsule renders nothing");
+	pillOff.unmount();
 
-	assert(pillTree.props.className === "dshmfb-comboPill", "composer renders the combined capsule");
-
-	// Find the two nested HalfPill function elements.
-	const halfPillElements = [];
-	walk(pillTree, (element) => {
-		if (typeof element.tag === "function") halfPillElements.push(element);
+	// B. Only the fallback switch on -> a single layers half; the hero composer
+	//    (no conversation bound) edits the global default, and switching it off
+	//    through the half removes the capsule reactively.
+	fallbackPillController.setGlobal(true);
+	const pillFbOnly = mount(composerButton.component, { controller: fallbackPillController, autoController: autoPillController, t });
+	pillFbOnly.runEffects();
+	let heroHalves = [];
+	walk(pillFbOnly.render(), (element) => {
+		if (typeof element.tag === "function") heroHalves.push(element);
 	});
-	assert(halfPillElements.length === 2, `combined pill contains two half-pill elements (${halfPillElements.length})`);
-
-	// Mount each half and exercise its toggle.
-	const testHalf = async (element, sets, label) => {
-		const halfMount = mount(element.tag, element.props);
+	assert(heroHalves.length === 1, `global auto off: only the fallback half renders (${heroHalves.length})`);
+	{
+		const halfMount = mount(heroHalves[0].tag, heroHalves[0].props);
 		halfMount.runEffects();
-		const halfTree = halfMount.render();
-		const buttons = findAllByTag(halfTree, "button");
-		assert(buttons.length === 1, `${label} half renders one button`);
-		const button = buttons[0];
-		assert(button.props["aria-pressed"] === false, `${label} half starts unpressed`);
-		assert(button.props.disabled === false, `${label} half is clickable on a writable connection`);
-		assert(typeof button.props["data-tip"] === "string" && button.props["data-tip"].length > 0, `${label} half carries a hover tooltip (data-tip)`);
-		assert(/点击关闭|点击开启|turn off|turn on/i.test(button.props["data-tip"]), `${label} half tooltip explains function and state`);
-
+		const iconNames = [];
+		walk(halfMount.render(), (element) => {
+			if (typeof element.tag === "function") iconNames.push(element.tag.name);
+		});
+		assert(iconNames.includes("IconLayers") && !iconNames.includes("IconBot"), "the surviving half is the model-fallback one (layers icon)");
+		const button = findAllByTag(halfMount.render(), "button")[0];
+		assert(button.props["aria-pressed"] === true, "the hero fallback half mirrors the global default (on)");
+		assert(button.props.disabled === false, "the hero fallback half is clickable on a writable connection");
+		assert(typeof button.props["data-tip"] === "string" && /点击关闭|点击开启|turn off|turn on/i.test(button.props["data-tip"]), "the hero fallback half carries a state tooltip");
 		await button.props.onClick();
-		const afterOn = halfMount.render();
-		const onButton = findAllByTag(afterOn, "button")[0];
-		assert(onButton.props["aria-pressed"] === true, `${label} half flips to pressed after a click`);
-		assert(onButton.props["data-tip"] !== button.props["data-tip"], `${label} half tooltip reflects the toggled state`);
+		assert(pillFbOnly.render() === null, "turning the global switch off through the half removes the capsule reactively");
+		const offWrite = fallbackSets.filter((entry) => entry.key === "enabled").at(-1);
+		assert(offWrite !== undefined && offWrite.value === false, "the hero half writes the global enabled key (off)");
+		fallbackPillController.setGlobal(true);
+		const restored = [];
+		walk(pillFbOnly.render(), (element) => {
+			if (typeof element.tag === "function") restored.push(element);
+		});
+		assert(restored.length === 1, "re-enabling globally restores the fallback half");
+		halfMount.unmount();
+	}
 
-		await onButton.props.onClick();
-		const afterOff = halfMount.render();
-		const offButton = findAllByTag(afterOff, "button")[0];
-		assert(offButton.props["aria-pressed"] === false, `${label} half toggles back off`);
-
-		const set = sets.find((entry) => entry.key === "enabled");
-		assert(set !== undefined && set.value === true, `${label} half writes the enabled key`);
-	};
-
-	await testHalf(halfPillElements[0], autoSets, "auto");
-	await testHalf(halfPillElements[1], fallbackSets, "fallback");
+	// C. Auto enabled too -> the full two-half capsule; the auto half writes the
+	//    auto namespace's global default.
+	autoPillController.setGlobal(true);
+	const pillBoth = mount(composerButton.component, { controller: fallbackPillController, autoController: autoPillController, t });
+	pillBoth.runEffects();
+	const bothHalves = [];
+	walk(pillBoth.render(), (element) => {
+		if (typeof element.tag === "function") bothHalves.push(element);
+	});
+	assert(bothHalves.length === 2, `both global switches on: both halves render (${bothHalves.length})`);
+	{
+		const halfMount = mount(bothHalves[0].tag, bothHalves[0].props);
+		halfMount.runEffects();
+		const iconNames = [];
+		walk(halfMount.render(), (element) => {
+			if (typeof element.tag === "function") iconNames.push(element.tag.name);
+		});
+		assert(iconNames.includes("IconBot"), "the first half is the auto-drive one (bot icon)");
+		const button = findAllByTag(halfMount.render(), "button")[0];
+		assert(button.props["aria-pressed"] === true, "the hero auto half mirrors the global default (on)");
+		await button.props.onClick();
+		const autoWrite = autoSets.filter((entry) => entry.key === "enabled").at(-1);
+		assert(autoWrite !== undefined && autoWrite.value === false, "the hero auto half writes the auto namespace's global default");
+		halfMount.unmount();
+	}
+	autoPillController.setGlobal(true);
+	pillBoth.unmount();
+	pillFbOnly.unmount();
 }
 
 // ===== activity log card =====
@@ -746,6 +777,13 @@ let autoSectionComponent = null;
 			this.children.push(child);
 			return child;
 		}
+		contains(node) {
+			if (node === this) return true;
+			for (const child of this.children) {
+				if (typeof child.contains === "function" && child.contains(node)) return true;
+			}
+			return false;
+		}
 		replaceChildren(...kids) {
 			this.children = kids;
 		}
@@ -760,7 +798,7 @@ let autoSectionComponent = null;
 			return null;
 		}
 		getBoundingClientRect() {
-			return this.rect;
+			return { ...this.rect, right: this.rect.left + this.rect.width, bottom: this.rect.top + this.rect.height };
 		}
 	}
 
@@ -959,7 +997,7 @@ let autoSectionComponent = null;
 	pill5.unmount();
 
 	// M. Responsive capsule: a tight composer row drops the text labels and
-	//    keeps the dot / layers icon (compact class driven by the bar width).
+	//    keeps the bot / layers icons (compact class driven by the bar width).
 	const pill6 = mount(composerButton.component, { controller, autoController, t, sessionId: "session-6" });
 	pill6.runEffects();
 	composerEl.rect = { left: 100, top: 300, width: 900, height: 60 };
@@ -970,6 +1008,166 @@ let autoSectionComponent = null;
 	assert(pillEl.classes.has("dshmfb-comboCompact"), "a narrow composer switches the capsule to icon-only compact mode");
 	pill6.unmount();
 	assert(!pillEl.classes.has("dshmfb-comboCompact"), "unmount clears the compact class");
+
+	// N. Per-conversation pill state (会话隔离): the bound conversation's pinned
+	//    modes override the global defaults, clicks POST to the session route,
+	//    and the autopilot half renders the robot icon. Both global gates are
+	//    on here so the full two-half capsule renders.
+	autoSnapshot = { enabled: true };
+	const sessionFetches = [];
+	const previousFetch = globalThis.fetch;
+	globalThis.fetch = async (url, init) => {
+		sessionFetches.push({ url: String(url), method: init?.method ?? "GET", body: init?.body });
+		if (String(url).startsWith("/dsh-model-fallback/api/session-state")) {
+			const pinned = init?.method === "POST" ? { auto: true, fallback: true } : { auto: true, fallback: false };
+			return { ok: true, status: 200, json: async () => ({ sessionId: "session-pin", modes: pinned, effective: { auto: pinned.auto === true, fallback: pinned.fallback === true } }) };
+		}
+		return previousFetch(url, init);
+	};
+	const pill7 = mount(composerButton.component, { controller, autoController, t, sessionId: "session-pin" });
+	pill7.runEffects();
+	await new Promise((resolve) => setTimeout(resolve, 5)); // let the modes fetch settle
+	const pillTree7 = pill7.render();
+	const halves7 = [];
+	walk(pillTree7, (element) => {
+		if (typeof element.tag === "function") halves7.push(element);
+	});
+	assert(halves7.length === 2, `the capsule still renders two half-pills (${halves7.length})`);
+	assert(sessionFetches.some((f) => f.url === "/dsh-model-fallback/api/session-state?sessionId=session-pin"), "the pill reads the conversation's pinned state on mount");
+
+	const autoHalfMount = mount(halves7[0].tag, halves7[0].props);
+	autoHalfMount.runEffects();
+	const autoButton = findAllByTag(autoHalfMount.render(), "button")[0];
+	const autoIconNames = [];
+	walk(autoHalfMount.render(), (element) => {
+		if (typeof element.tag === "function") autoIconNames.push(element.tag.name);
+	});
+	assert(autoIconNames.includes("IconBot"), "the autopilot half renders the robot-avatar icon");
+	assert(autoButton.props["aria-pressed"] === true, "autopilot shows the conversation's pinned ON (global gate is on)");
+
+	const fallbackHalfMount = mount(halves7[1].tag, halves7[1].props);
+	fallbackHalfMount.runEffects();
+	const fallbackButton = findAllByTag(fallbackHalfMount.render(), "button")[0];
+	const fallbackIconNames = [];
+	walk(fallbackHalfMount.render(), (element) => {
+		if (typeof element.tag === "function") fallbackIconNames.push(element.tag.name);
+	});
+	assert(fallbackIconNames.includes("IconLayers"), "the fallback half keeps the layers icon");
+	assert(fallbackButton.props["aria-pressed"] === false, "model fallback shows the conversation's pinned OFF (global default is on)");
+
+	const enabledWritesBefore = sets.filter((entry) => entry.key === "enabled").length;
+	await fallbackButton.props.onClick();
+	await new Promise((resolve) => setTimeout(resolve, 5));
+	const posted = sessionFetches.filter((f) => f.method === "POST");
+	assert(posted.length === 1 && posted[0].url === "/dsh-model-fallback/api/session-state", "clicking a half writes the per-conversation state");
+	{
+		const body = JSON.parse(posted[0].body);
+		assert(body.sessionId === "session-pin" && body.fallback === true, "the POST pins only this conversation's fallback");
+	}
+	assert(sets.filter((entry) => entry.key === "enabled").length === enabledWritesBefore, "the per-conversation click never writes the global default");
+	const pillTreeAfter = pill7.render();
+	const halvesAfter = [];
+	walk(pillTreeAfter, (element) => {
+		if (typeof element.tag === "function") halvesAfter.push(element);
+	});
+	const fallbackHalfAfter = mount(halvesAfter[1].tag, halvesAfter[1].props);
+	fallbackHalfAfter.runEffects();
+	assert(findAllByTag(fallbackHalfAfter.render(), "button")[0].props["aria-pressed"] === true, "the conversation's fallback pin flips the half to pressed");
+	pill7.unmount();
+	globalThis.fetch = previousFetch;
+
+	// N2. Global gate on a bound conversation: with the auto switch globally
+	//     off the autopilot half disappears (a pinned auto:true stays stored
+	//     but renders nothing); with the fallback switch off too the whole
+	//     capsule renders nothing — while the session-state polling keeps
+	//     running in the background.
+	{
+		autoSnapshot = {}; // auto gate off again
+		const gateFetches = [];
+		globalThis.fetch = async (url, init) => {
+			gateFetches.push({ url: String(url), method: init?.method ?? "GET" });
+			if (String(url).startsWith("/dsh-model-fallback/api/session-state")) {
+				return { ok: true, status: 200, json: async () => ({ sessionId: "session-gate", modes: { auto: true, fallback: false } }) };
+			}
+			return previousFetch(url, init);
+		};
+		const pillGate = mount(composerButton.component, { controller, autoController, t, sessionId: "session-gate" });
+		pillGate.runEffects();
+		await new Promise((resolve) => setTimeout(resolve, 5));
+		const gateHalves = [];
+		walk(pillGate.render(), (element) => {
+			if (typeof element.tag === "function") gateHalves.push(element);
+		});
+		assert(gateHalves.length === 1, `global auto off hides the autopilot half on a bound conversation (${gateHalves.length})`);
+		{
+			const halfMount = mount(gateHalves[0].tag, gateHalves[0].props);
+			halfMount.runEffects();
+			const iconNames = [];
+			walk(halfMount.render(), (element) => {
+				if (typeof element.tag === "function") iconNames.push(element.tag.name);
+			});
+			assert(iconNames.includes("IconLayers") && !iconNames.includes("IconBot"), "the surviving half on the bound conversation is the fallback one");
+			halfMount.unmount();
+		}
+		pillGate.unmount();
+		// Fallback gate off too -> the capsule vanishes entirely; the pinned
+		// modes of the conversation keep being polled underneath.
+		snapshotValue = { ...snapshotValue, enabled: false };
+		const fetchesBefore = gateFetches.length;
+		const pillHidden = mount(composerButton.component, { controller, autoController, t, sessionId: "session-gate" });
+		pillHidden.runEffects();
+		await new Promise((resolve) => setTimeout(resolve, 5));
+		assert(pillHidden.render() === null, "both global switches off: the bound conversation renders no capsule at all");
+		assert(gateFetches.length > fetchesBefore, "the hidden capsule keeps polling the conversation's pinned state");
+		pillHidden.unmount();
+		snapshotValue = { ...snapshotValue, enabled: true };
+		globalThis.fetch = previousFetch;
+	}
+
+	// O. Squeeze-aware compact: a long model name pushes the trailing group
+	//    (capsule + model + send) onto a second row line — the capsule compacts
+	//    even though the composer bar itself is wide, and only re-expands once
+	//    the row offers real slack (hysteresis, no flapping).
+	const squeezeBar = new StubElement("div");
+	squeezeBar.hasTextarea = true;
+	squeezeBar.rect = { left: 0, top: 200, width: 1000, height: 120 };
+	const squeezeRow = new StubElement("div");
+	const squeezeTools = new StubElement("div");
+	squeezeTools.rect = { left: 20, top: 300, width: 200, height: 28 };
+	const squeezeTrailing = new StubElement("div");
+	squeezeTrailing.rect = { left: 700, top: 300, width: 280, height: 28 };
+	const squeezePill = new StubElement("div");
+	squeezePill.className = "dshmfb-comboPill";
+	squeezePill.rect = { left: 700, top: 300, width: 230, height: 28 };
+	squeezeTrailing.appendChild(squeezePill);
+	squeezeRow.appendChild(squeezeTools);
+	squeezeRow.appendChild(squeezeTrailing);
+	squeezeBar.appendChild(squeezeRow);
+	const originalQuery = documentStub.querySelector;
+	documentStub.querySelector = (selector) => (selector === ".dshmfb-comboPill" ? squeezePill : originalQuery(selector));
+
+	const pill8 = mount(composerButton.component, { controller, autoController, t, sessionId: "session-squeeze" });
+	pill8.runEffects();
+	const squeezeObserver = () => StubResizeObserver.instances.at(-1);
+	assert(!squeezePill.classes.has("dshmfb-comboCompact"), "a wide composer with everything on one line keeps the labels");
+	// The long model name wraps the trailing group to the second line.
+	squeezeTrailing.rect = { left: 20, top: 340, width: 280, height: 28 };
+	squeezePill.rect = { left: 20, top: 340, width: 230, height: 28 };
+	squeezeObserver().emit();
+	assert(squeezePill.classes.has("dshmfb-comboCompact"), "a wrapped trailing group (long model name) compacts the capsule on a wide composer");
+	// Back on one line but barely fitting: hysteresis keeps the icons.
+	squeezeTrailing.rect = { left: 260, top: 300, width: 280, height: 28 };
+	squeezePill.rect = { left: 260, top: 300, width: 230, height: 28 };
+	squeezeObserver().emit();
+	assert(squeezePill.classes.has("dshmfb-comboCompact"), "a tight-but-fitting row keeps the compact capsule (no flapping)");
+	// Real slack returns: the labels come back.
+	squeezeTrailing.rect = { left: 700, top: 300, width: 280, height: 28 };
+	squeezePill.rect = { left: 700, top: 300, width: 230, height: 28 };
+	squeezeObserver().emit();
+	assert(!squeezePill.classes.has("dshmfb-comboCompact"), "a roomy row expands the capsule back to icon+label");
+	pill8.unmount();
+	assert(!squeezePill.classes.has("dshmfb-comboCompact"), "unmount clears the squeeze compact class");
+	documentStub.querySelector = originalQuery;
 
 	//#endregion teardown
 	delete globalThis.document;
