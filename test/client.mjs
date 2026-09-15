@@ -156,6 +156,15 @@ exports.apply({
 		if (service === "settingsScope") return { bind: () => controller };
 		return null;
 	},
+	remote: {
+		llm: {
+			listProviders: async () => ({ ok: true, value: [] }),
+			listConfigurableProviders: async () => ({ ok: true, value: [] }),
+		},
+		session: {
+			modelCatalog: async () => ({ ok: true, value: { groups: [], failures: [] } }),
+		},
+	},
 	slots: {
 		inject(_name, register) {
 			register();
@@ -457,8 +466,11 @@ assert(findByText(readonlyTree, "恢复默认").props.disabled === true, "read-o
 	};
 	const catalogApi = {
 		llm: {
-			providers: async () => ({ result: { ok: true, value: { providers: [{ provider: "p1", displayName: "Provider One", active: true }] } } }),
-			models: async () => ({ result: { ok: true, value: { groups: [{ id: "p1", models: [{ id: "m1" }, { id: "m2" }] }], failures: [] } } }),
+			listProviders: async () => ({ ok: true, value: [{ id: "p1", name: "Provider One" }] }),
+			listConfigurableProviders: async () => ({ ok: true, value: [{ provider: "p1", displayName: "Provider One", settingsNs: "llm-pi-ai", settingsPath: ["providers", "p1"], declared: true }] }),
+		},
+		session: {
+			modelCatalog: async () => ({ ok: true, value: { groups: [{ id: "p1", models: [{ id: "m1" }, { id: "m2" }] }], failures: [] } }),
 		},
 	};
 
@@ -796,7 +808,8 @@ let autoSectionComponent = null;
 			this.children = kids;
 		}
 		querySelector(selector) {
-			if (selector === "textarea" && this.hasTextarea) return {};
+			if (selector.includes("textarea") && this.hasTextarea) return {};
+			if (this.hasEditable && /contenteditable|data-lexical-editor/.test(selector)) return {};
 			for (const child of this.children) {
 				if (typeof child.querySelector === "function") {
 					const hit = child.querySelector(selector);
@@ -903,6 +916,15 @@ let autoSectionComponent = null;
 			if (service === "connection") return { api: {} };
 			if (service === "settingsScope") return { bind: () => controller };
 			return null;
+		},
+		remote: {
+			llm: {
+				listProviders: async () => ({ ok: true, value: [] }),
+				listConfigurableProviders: async () => ({ ok: true, value: [] }),
+			},
+			session: {
+				modelCatalog: async () => ({ ok: true, value: { groups: [], failures: [] } }),
+			},
 		},
 		slots: {
 			inject(_name, register) {
@@ -1212,6 +1234,102 @@ let autoSectionComponent = null;
 	documentStub.querySelector = originalQuery;
 	documentStub.createElement = originalCreateElement;
 	delete globalThis.getComputedStyle;
+
+	// P. Contenteditable composer (Lexical, NO <textarea> — the current DSH
+	//    input): the composer bar is located through the editable, so the
+	//    width rule still hides the labels on narrow bars. Before the fix the
+	//    bar lookup only matched textareas and measure() bailed out entirely.
+	{
+		const editableBar = new StubElement("div");
+		editableBar.hasEditable = true; // [contenteditable] / [data-lexical-editor]
+		editableBar.rect = { left: 100, top: 300, width: 900, height: 90 };
+		const editablePill = new StubElement("div");
+		editablePill.className = "dshmfb-comboPill";
+		editablePill.visible = true;
+		editableBar.appendChild(editablePill);
+		const originalQueryEditable = documentStub.querySelector;
+		documentStub.querySelector = (selector) => (selector === ".dshmfb-comboPill" ? editablePill : originalQueryEditable(selector));
+		const pill9 = mount(composerButton.component, { controller, autoController, t, sessionId: "session-editable" });
+		pill9.runEffects();
+		const editableObserver = () => StubResizeObserver.instances.at(-1);
+		editableBar.rect = { left: 100, top: 300, width: 900, height: 90 };
+		editableObserver().emit();
+		assert(!editablePill.classes.has("dshmfb-comboCompact"), "a wide contenteditable composer keeps the labels");
+		editableBar.rect = { left: 100, top: 300, width: 500, height: 90 };
+		editableObserver().emit();
+		assert(editablePill.classes.has("dshmfb-comboCompact"), "a narrow contenteditable composer (no textarea) still compacts the capsule");
+		pill9.unmount();
+		documentStub.querySelector = originalQueryEditable;
+	}
+
+	// Q. A middle "modes" group between tools and trailing (the current DSH
+	//    composer row: tools | modes | trailing): free space is measured
+	//    against the trailing group's immediate neighbour, so the modes width
+	//    is never mistaken for free space — the old tools-based gap would
+	//    count it, re-open the flip loop, and bounce the page.
+	{
+		const modesBar = new StubElement("div");
+		modesBar.hasTextarea = true;
+		modesBar.rect = { left: 0, top: 200, width: 1000, height: 120 };
+		const modesRow = new StubElement("div");
+		const modesTools = new StubElement("div");
+		modesTools.rect = { left: 20, top: 300, width: 200, height: 28 }; // tools: 20-220
+		const modesGroup = new StubElement("div");
+		modesGroup.rect = { left: 220, top: 300, width: 620, height: 28 }; // modes: 220-840
+		const modesTrailing = new StubElement("div");
+		modesTrailing.rect = { left: 860, top: 300, width: 140, height: 28 }; // trailing pinned right: 860-1000
+		const modesPill = new StubElement("div");
+		modesPill.className = "dshmfb-comboPill";
+		modesPill.rect = { left: 860, top: 300, width: 110, height: 28 };
+		modesTrailing.appendChild(modesPill);
+		modesRow.appendChild(modesTools);
+		modesRow.appendChild(modesGroup);
+		modesRow.appendChild(modesTrailing);
+		modesBar.appendChild(modesRow);
+		const originalQueryModes = documentStub.querySelector;
+		documentStub.querySelector = (selector) => (selector === ".dshmfb-comboPill" ? modesPill : originalQueryModes(selector));
+		// Same label-width calibration as the squeeze test: two CJK labels
+		// measured at ~180 px → effective expansion threshold 192 px.
+		const modesLabelA = new StubElement("span");
+		modesLabelA.textContent = "自动驾驶";
+		const modesLabelB = new StubElement("span");
+		modesLabelB.textContent = "模型回退";
+		modesPill.querySelectorAll = (selector) => (selector === ".dshmfb-halfLabel" ? [modesLabelA, modesLabelB] : []);
+		const originalCreateModes = documentStub.createElement;
+		documentStub.createElement = (tag) => {
+			const el = new StubElement(tag);
+			Object.defineProperty(el, "offsetWidth", { configurable: true, get: () => (el.textContent ?? "").length * 20 });
+			return el;
+		};
+		globalThis.getComputedStyle = () => ({ font: "15px sans-serif", letterSpacing: "normal" });
+
+		const pill10 = mount(composerButton.component, { controller, autoController, t, sessionId: "session-modes" });
+		pill10.runEffects();
+		const modesObserver = () => StubResizeObserver.instances.at(-1);
+		// The long model name wraps the trailing group → compact, as usual.
+		modesBar.rect = { left: 0, top: 200, width: 1000, height: 120 };
+		modesTrailing.rect = { left: 860, top: 340, width: 140, height: 28 };
+		modesPill.rect = { left: 860, top: 340, width: 110, height: 28 };
+		modesObserver().emit();
+		assert(modesPill.classes.has("dshmfb-comboCompact"), "a wrapped trailing group compacts on a row with a middle modes group");
+		// Back on one line; the modes group eats the row: only 20 px free
+		// beside the trailing group. The OLD tools-based gap (860 − 220 = 640)
+		// would expand and flip forever; the neighbour-based free space keeps
+		// the capsule compact.
+		modesTrailing.rect = { left: 860, top: 300, width: 140, height: 28 };
+		modesPill.rect = { left: 860, top: 300, width: 110, height: 28 };
+		modesObserver().emit();
+		assert(modesPill.classes.has("dshmfb-comboCompact"), "a middle modes group is never counted as free space (no flip loop)");
+		// The modes group shrinks → real free space appears → labels return.
+		modesGroup.rect = { left: 220, top: 300, width: 80, height: 28 };
+		modesObserver().emit();
+		assert(!modesPill.classes.has("dshmfb-comboCompact"), "real free space past the neighbour brings the labels back");
+		pill10.unmount();
+		assert(!modesPill.classes.has("dshmfb-comboCompact"), "unmount clears the modes compact class");
+		documentStub.querySelector = originalQueryModes;
+		documentStub.createElement = originalCreateModes;
+		delete globalThis.getComputedStyle;
+	}
 
 	//#endregion teardown
 	delete globalThis.document;
