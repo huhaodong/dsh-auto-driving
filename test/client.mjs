@@ -777,6 +777,14 @@ let autoSectionComponent = null;
 			this.children.push(child);
 			return child;
 		}
+		removeChild(child) {
+			const index = this.children.indexOf(child);
+			if (index >= 0) {
+				this.children.splice(index, 1);
+				child.parentElement = null;
+			}
+			return child;
+		}
 		contains(node) {
 			if (node === this) return true;
 			for (const child of this.children) {
@@ -1146,6 +1154,24 @@ let autoSectionComponent = null;
 	const originalQuery = documentStub.querySelector;
 	documentStub.querySelector = (selector) => (selector === ".dshmfb-comboPill" ? squeezePill : originalQuery(selector));
 
+	// Calibration stubs: the squeeze pill carries two CJK labels; measuring
+	// their text in the composer font yields a ~180 px label delta, so the
+	// effective expansion threshold becomes 192 px instead of the fixed 140 —
+	// gaps between the two are exactly the old flip-flop band.
+	const squeezeLabelA = new StubElement("span");
+	squeezeLabelA.textContent = "自动驾驶";
+	const squeezeLabelB = new StubElement("span");
+	squeezeLabelB.textContent = "模型回退";
+	squeezePill.querySelectorAll = (selector) => (selector === ".dshmfb-halfLabel" ? [squeezeLabelA, squeezeLabelB] : []);
+	const originalCreateElement = documentStub.createElement;
+	documentStub.createElement = (tag) => {
+		const el = new StubElement(tag);
+		// 4 CJK glyphs per label at 20 px each — the "rendered" label width.
+		Object.defineProperty(el, "offsetWidth", { configurable: true, get: () => (el.textContent ?? "").length * 20 });
+		return el;
+	};
+	globalThis.getComputedStyle = () => ({ font: "15px sans-serif", letterSpacing: "normal" });
+
 	const pill8 = mount(composerButton.component, { controller, autoController, t, sessionId: "session-squeeze" });
 	pill8.runEffects();
 	const squeezeObserver = () => StubResizeObserver.instances.at(-1);
@@ -1160,7 +1186,23 @@ let autoSectionComponent = null;
 	squeezePill.rect = { left: 260, top: 300, width: 230, height: 28 };
 	squeezeObserver().emit();
 	assert(squeezePill.classes.has("dshmfb-comboCompact"), "a tight-but-fitting row keeps the compact capsule (no flapping)");
-	// Real slack returns: the labels come back.
+	// The regression: gap 160 sits inside the old FIXED 140 px band — the
+	// labels would return, re-wrap the trailing group (they re-add ~180 px),
+	// and re-compact forever, bouncing the page. The self-calibrated
+	// threshold (192 px) must keep the capsule compact here.
+	squeezeTrailing.rect = { left: 380, top: 300, width: 280, height: 28 };
+	squeezePill.rect = { left: 380, top: 300, width: 230, height: 28 };
+	squeezeObserver().emit();
+	assert(squeezePill.classes.has("dshmfb-comboCompact"), "a gap inside the measured label width keeps the capsule compact (no flip loop)");
+	// Real slack past the measured width brings the labels back.
+	squeezeTrailing.rect = { left: 260, top: 300, width: 280, height: 28 };
+	squeezePill.rect = { left: 260, top: 300, width: 230, height: 28 };
+	squeezeObserver().emit();
+	squeezeTrailing.rect = { left: 420, top: 300, width: 280, height: 28 };
+	squeezePill.rect = { left: 420, top: 300, width: 230, height: 28 };
+	squeezeObserver().emit();
+	assert(!squeezePill.classes.has("dshmfb-comboCompact"), "a gap past the measured label width brings the labels back");
+	// Roomier still (the original roomy case): stays expanded.
 	squeezeTrailing.rect = { left: 700, top: 300, width: 280, height: 28 };
 	squeezePill.rect = { left: 700, top: 300, width: 230, height: 28 };
 	squeezeObserver().emit();
@@ -1168,6 +1210,8 @@ let autoSectionComponent = null;
 	pill8.unmount();
 	assert(!squeezePill.classes.has("dshmfb-comboCompact"), "unmount clears the squeeze compact class");
 	documentStub.querySelector = originalQuery;
+	documentStub.createElement = originalCreateElement;
+	delete globalThis.getComputedStyle;
 
 	//#endregion teardown
 	delete globalThis.document;
