@@ -164,6 +164,13 @@ exports.apply({
 		session: {
 			modelCatalog: async () => ({ ok: true, value: { groups: [], failures: [] } }),
 		},
+		settings: {
+			describe: async () => ({ ok: true, value: { writable: true, namespaces: [] } }),
+			mutate: async () => ({ ok: true, value: { revision: 1 } }),
+		},
+		$on() {
+			return () => {};
+		},
 	},
 	slots: {
 		inject(_name, register) {
@@ -183,6 +190,73 @@ assert(fallbackSection.spec.label() === "自动驾驶", "merged tab uses the roo
 assert(composerButton !== undefined && composerButton.spec.id === "model-fallback-auto-drive", "auto-drive pill registered in the composer input bar");
 assert(t("retrySection") === "任务重试", "zh dictionary carries the retry section strings");
 //#endregion
+
+// ===== DSH NEXT (dsh 0.2.x) settings transport: the remote.settings shim =====
+{
+	const sets = [];
+	let doc = { writable: true, namespaces: [{ ns: "model-fallback", value: { enabled: false, providers: [] }, revision: 7 }] };
+	const shimSections = [];
+	exports.apply({
+		effect(fn) {
+			return fn?.();
+		},
+		locale: {
+			register() {},
+			bind() {
+				return (key) => dictionaries.get("model-fallback")?.zh?.[key] ?? key;
+			},
+		},
+		// No settingsScope on this host — the shim must fall back to remote.settings.
+		get(service) {
+			if (service === "connection") return { api: {} };
+			return null;
+		},
+		remote: {
+			llm: {
+				listProviders: async () => ({ ok: true, value: [] }),
+				listConfigurableProviders: async () => ({ ok: true, value: [] }),
+			},
+			session: {
+				modelCatalog: async () => ({ ok: true, value: { groups: [], failures: [] } }),
+			},
+			settings: {
+				describe: async () => ({ ok: true, value: doc }),
+				mutate: async (ns, ops, revision) => {
+					sets.push({ ns, ops, revision });
+					const row = doc.namespaces.find((entry) => entry.ns === ns);
+					for (const op of ops) row.value[op.path[0]] = op.value;
+					row.revision += 1;
+					return { ok: true, value: { revision: row.revision } };
+				},
+			},
+			$on() {
+				return () => {};
+			},
+		},
+		slots: {
+			inject(_name, register) {
+				register();
+			},
+			register(spec) {
+				shimSections.push(spec);
+			},
+		},
+	});
+	const shimSpec = shimSections.find((spec) => spec.id === "model-fallback");
+	assert(shimSpec !== undefined, "plugin registers its settings section on DSH NEXT without settingsScope");
+	shimSpec.inject();
+	await new Promise((resolve) => setTimeout(resolve, 5)); // let the describe mirror settle
+	// inject() returns the props the settings page passes; the controller rides on it.
+	const shimInjected = shimSpec.inject();
+	const shimController = shimInjected.controller;
+	const snap0 = shimController.getSnapshot();
+	assert(snap0.status === "ready" && snap0.value?.enabled === false && snap0.revision === 7, "shim controller serves the namespace view from remote.settings.describe");
+	assert(snap0.writable === true && snap0.mode === "host", "shim snapshot carries host writability");
+	await shimController.set("enabled", true);
+	assert(sets.length === 1 && sets[0].ns === "model-fallback" && sets[0].revision === 7 && sets[0].ops[0].op === "set" && sets[0].ops[0].path[0] === "enabled" && sets[0].ops[0].value === true, "shim set() writes a revision-fenced set op");
+	const snap1 = shimController.getSnapshot();
+	assert(snap1.value?.enabled === true && snap1.revision === 8, "shim controller refolds the document after a write");
+}
 
 //#region tree helpers
 function walk(node, visit) {
@@ -924,6 +998,13 @@ let autoSectionComponent = null;
 			},
 			session: {
 				modelCatalog: async () => ({ ok: true, value: { groups: [], failures: [] } }),
+			},
+			settings: {
+				describe: async () => ({ ok: true, value: { writable: true, namespaces: [] } }),
+				mutate: async () => ({ ok: true, value: { revision: 1 } }),
+			},
+			$on() {
+				return () => {};
 			},
 		},
 		slots: {
