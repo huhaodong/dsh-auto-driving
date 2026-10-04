@@ -1,6 +1,6 @@
 {
   "name": "dsh-model-fallback",
-  "version": "0.6.3",
+  "version": "0.6.4",
   "description": "DeepSeek Harness plugin: pick configured model providers, and when a model fails with a model-related error the request automatically falls through the provider group's models (then the next selected provider) until one works, so the unfinished task keeps going. Adds its own Settings tab.",
   "type": "module",
   "main": "lib/index.js",
@@ -25,7 +25,7 @@
   ],
   "license": "MIT",
   "scripts": {
-    "test": "node test/smoke.mjs && node test/client.mjs && node test/e2e.mjs"
+    "test": "node test/smoke.mjs && node test/client.mjs && node test/e2e.mjs && node test/next-settings.mjs"
   },
   "engines": {
     "node": ">=20"

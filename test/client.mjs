@@ -194,7 +194,14 @@ assert(t("retrySection") === "任务重试", "zh dictionary carries the retry se
 // ===== DSH NEXT (dsh 0.2.x) settings transport: the remote.settings shim =====
 {
 	const sets = [];
-	let doc = { writable: true, namespaces: [{ ns: "model-fallback", value: { enabled: false, providers: [] }, revision: 7 }] };
+	let doc = {
+		writable: true,
+		namespaces: [{
+			ns: "model-fallback",
+			value: { enabled: false, providers: [], auto: { enabled: true, autoAllowPermissions: true, autoAnswerQuestions: true, autoApprovePlans: true } },
+			revision: 7,
+		}],
+	};
 	const shimSections = [];
 	exports.apply({
 		effect(fn) {
@@ -224,7 +231,15 @@ assert(t("retrySection") === "任务重试", "zh dictionary carries the retry se
 				mutate: async (ns, ops, revision) => {
 					sets.push({ ns, ops, revision });
 					const row = doc.namespaces.find((entry) => entry.ns === ns);
-					for (const op of ops) row.value[op.path[0]] = op.value;
+					// Mirror the host's revision fence: stale writes are rejected.
+					if (revision !== undefined && revision !== row.revision) {
+						return { ok: false, error: { code: "SETTINGS_CONFLICT", message: "stale revision" } };
+					}
+					for (const op of ops) {
+						let node = row.value;
+						for (const key of op.path.slice(0, -1)) node = node[key] ??= {};
+						node[op.path[op.path.length - 1]] = op.value;
+					}
 					row.revision += 1;
 					return { ok: true, value: { revision: row.revision } };
 				},
@@ -256,6 +271,17 @@ assert(t("retrySection") === "任务重试", "zh dictionary carries the retry se
 	assert(sets.length === 1 && sets[0].ns === "model-fallback" && sets[0].revision === 7 && sets[0].ops[0].op === "set" && sets[0].ops[0].path[0] === "enabled" && sets[0].ops[0].value === true, "shim set() writes a revision-fenced set op");
 	const snap1 = shimController.getSnapshot();
 	assert(snap1.value?.enabled === true && snap1.revision === 8, "shim controller refolds the document after a write");
+	// The auto namespace rides the `auto` subtree of the shared entry row on
+	// DSH NEXT: reads slice it out, writes fence against the parent row.
+	const autoController = shimInjected.autoController;
+	const autoSnap0 = autoController.getSnapshot();
+	assert(autoSnap0.status === "ready" && autoSnap0.value?.enabled === true && autoSnap0.value?.autoApprovePlans === true, "auto controller reads the auto subtree of the shared row");
+	await autoController.set("autoApprovePlans", false);
+	assert(sets.length === 3 && sets[1].revision === 7 && sets[2].revision === 8, "stale sibling fence retried once after re-describe");
+	const autoWrite = sets.at(-1);
+	assert(autoWrite.ns === "model-fallback" && autoWrite.revision === 8 && autoWrite.ops[0].path.length === 2 && autoWrite.ops[0].path[0] === "auto" && autoWrite.ops[0].path[1] === "autoApprovePlans" && autoWrite.ops[0].value === false, "auto set() writes [auto, key] against the parent row with its revision");
+	const autoSnap1 = autoController.getSnapshot();
+	assert(autoSnap1.value?.autoApprovePlans === false && autoSnap1.value?.enabled === true, "auto controller refolds the subtree after a write");
 }
 
 //#region tree helpers

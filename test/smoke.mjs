@@ -72,6 +72,7 @@ const fakeUQ = {
 	},
 };
 const approvalListeners = [];
+const approvalOptions = [];
 const loopListeners = [];
 const ctx = {
 	fiber: { state: 0 },
@@ -81,8 +82,11 @@ const ctx = {
 	get(name) {
 		return name === "userQuestions" ? fakeUQ : undefined;
 	},
-	on(eventName, listener) {
-		if (eventName === "approval/request") approvalListeners.push(listener);
+	on(eventName, listener, options) {
+		if (eventName === "approval/request") {
+			approvalListeners.push(listener);
+			approvalOptions.push(options);
+		}
 		if (eventName === "agent/request-error") loopListeners.push(listener);
 		if (!this.listeners.has(eventName)) this.listeners.set(eventName, []);
 		this.listeners.get(eventName).push(listener);
@@ -125,9 +129,9 @@ const ctx = {
 const streamListener = (() => {
 	let captured = null;
 	const originalOn = ctx.on.bind(ctx);
-	ctx.on = (eventName, listener) => {
+	ctx.on = (eventName, listener, options) => {
 		if (eventName === "llm/stream") captured = listener;
-		return originalOn(eventName, listener);
+		return originalOn(eventName, listener, options);
 	};
 	return { get: () => captured };
 })();
@@ -1346,6 +1350,94 @@ assert(log.some(([, line]) => line.includes("loop-level retry listener armed")),
 		assert(stored !== undefined && typeof stored === "object", "per-session modes persisted into the settings document");
 	}
 	delete ctx.sessions;
+}
+
+{
+	// Approval auto-allow must pre-empt the UI/API bridge: registered head-first
+	// and immune to cordis-4 context admission filtering. The harness re-applies
+	// the plugin on the same context (reload scenarios) — every registration
+	// must carry the preemption flags.
+	assert(approvalOptions.length >= 1 && approvalOptions.every((options) => options?.prepend === true), "approval/request listener is prepended (beats the UI bridge prompt)");
+	assert(approvalOptions.every((options) => options?.global === true), "approval/request listener bypasses context admission filters");
+}
+
+{
+	// DSH NEXT (user-questions 0.2.x): the provider registry is gone — the
+	// service's ask/askTimed methods are the single funnel and the plugin
+	// must wrap them directly.
+	const realAsk = [];
+	const fakeUQ2 = {
+		ask: async (request) => {
+			realAsk.push(request);
+			return { answers: [{ id: "real", selected: ["REAL"] }] };
+		},
+		askTimed: async (request) => {
+			realAsk.push(request);
+			return { answers: [{ id: "real-t", selected: ["T"] }] };
+		},
+	};
+	const resolved2 = new Map([["model-fallback", { enabled: true, providers: ["p1"] }], ["model-fallback-auto", { enabled: true, autoAnswerQuestions: true, autoApprovePlans: true }]]);
+	const watchers2 = [];
+	const ctx2 = {
+		fiber: { state: 0 },
+		logger,
+		llm: fakeLlm,
+		locale: {
+			register() {},
+			bind: () => (key) => key,
+		},
+		listeners: new Map(),
+		get(name) {
+			return name === "userQuestions" ? fakeUQ2 : undefined;
+		},
+		on(eventName, listener) {
+			if (!this.listeners.has(eventName)) this.listeners.set(eventName, []);
+			this.listeners.get(eventName).push(listener);
+			return () => {};
+		},
+		effect(factory) {
+			return typeof factory?.() === "function" ? factory() : undefined;
+		},
+		inject(_deps, callback) {
+			callback(ctx2);
+		},
+		settings: {
+			register(namespace, schema, options) {
+				return {
+					get: () => resolved2.get(namespace),
+					watch: (callback) => {
+						watchers2.push(callback);
+						return () => {};
+					},
+				};
+			},
+			async update() {},
+		},
+	};
+	apply(ctx2, { enabled: true, providers: ["p1"] });
+	for (const watcher of watchers2) watcher();
+	await new Promise((r) => setTimeout(r, 20));
+
+	const planReq = {
+		questions: [{
+			id: "plan-review",
+			question: "Approve this plan and leave plan mode?",
+			options: [{ label: "Approve (Recommended)" }, { label: "Keep planning" }],
+			intent: { kind: "plan-review", approve: "Approve (Recommended)" },
+		}],
+		agent: { id: "agent-2", session: { header: { id: "s-next" } } },
+	};
+	const planAnswer = await fakeUQ2.ask(planReq);
+	assert(realAsk.length === 0 && planAnswer.answers[0].selected[0] === "Approve (Recommended)", "0.2.x seam: plan review auto-approved through the wrapped ask()");
+	const plainAnswer = await fakeUQ2.ask({ questions: [{ id: "choice", question: "Pick one", options: [{ label: "First" }, { label: "Second" }] }] });
+	assert(plainAnswer.answers[0].selected[0] === "First", "0.2.x seam: confirmation auto-answered with the first option");
+	const timedAnswer = await fakeUQ2.askTimed({ questions: [{ id: "plan-review", question: "Approve this plan and leave plan mode?", intent: { kind: "plan-review", approve: "Approve (Recommended)" } }] }, "call-1", 120000);
+	assert(realAsk.length === 0 && timedAnswer.answers[0].selected[0] === "Approve (Recommended)", "0.2.x seam: timed ask auto-answered without a pending wait");
+	resolved2.set("model-fallback-auto", { enabled: false });
+	for (const watcher of watchers2) watcher();
+	await new Promise((r) => setTimeout(r, 20));
+	await fakeUQ2.ask({ questions: [{ id: "choice", question: "Pick one", options: [{ label: "First" }] }] });
+	assert(realAsk.length === 1, "0.2.x seam: master off delegates to the real ask()");
 }
 
 assert(name === "model-fallback", "plugin name exported");
