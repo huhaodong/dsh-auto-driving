@@ -8,6 +8,9 @@
  * and chain exhaustion.
  */
 import { apply, Config, name, __clearHealthCache } from "../lib/index.js";
+import { mkdirSync, readFileSync, rmSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 
 const assert = (condition, message) => {
 	if (!condition) {
@@ -1438,6 +1441,78 @@ assert(log.some(([, line]) => line.includes("loop-level retry listener armed")),
 	await new Promise((r) => setTimeout(r, 20));
 	await fakeUQ2.ask({ questions: [{ id: "choice", question: "Pick one", options: [{ label: "First" }] }] });
 	assert(realAsk.length === 1, "0.2.x seam: master off delegates to the real ask()");
+}
+
+{
+	// DSH NEXT acceptance: the UI/API bridge installs its approval/request
+	// handler BEFORE the plugin (a client stream opens early in boot) and
+	// prompts a human without calling next(). The plugin's prepend+global
+	// registration must still answer first — this is the exact ordering bug
+	// that left 5 approvals prompting while full-auto was armed.
+	const prompts = [];
+	const chain = [];
+	const resolved3 = new Map([["model-fallback", { enabled: true, providers: ["p1"] }], ["model-fallback-auto", { enabled: true, autoAnswerQuestions: true, autoApprovePlans: true }]]);
+	const uq3 = {};
+	const auditDir = join(tmpdir(), `dshmfb-audit-${process.pid}`);
+	mkdirSync(auditDir, { recursive: true });
+	let promptSpec = null;
+	const ctx3 = {
+		fiber: { state: 0 },
+		logger,
+		llm: fakeLlm,
+		locale: { register() {}, bind: () => (key) => key },
+		systemPrompt: {
+			context(spec) {
+				promptSpec = spec;
+			},
+		},
+		listeners: new Map(),
+		get(name) {
+			return name === "userQuestions" ? uq3 : undefined;
+		},
+		on(eventName, listener, options) {
+			if (eventName === "approval/request") chain[options?.prepend ? "unshift" : "push"](listener);
+			return () => {};
+		},
+		effect(factory) {
+			return typeof factory?.() === "function" ? factory() : undefined;
+		},
+		inject(_deps, callback) {
+			callback(ctx3);
+		},
+		settings: {
+			register(namespace) {
+				return { get: () => resolved3.get(namespace), watch: () => () => {} };
+			},
+			async update() {},
+		},
+	};
+	// The bridge registers FIRST and never calls next() (it prompts the UI).
+	chain.push(async (request) => {
+		prompts.push(request);
+		return "prompted";
+	});
+	apply(ctx3, { enabled: true, providers: ["p1"], auto: { enabled: true, autoAllowPermissions: true } });
+	const runWaterfall = async (request) => {
+		const cbs = [...chain];
+		const next = () => (cbs.shift() ?? (() => "unavailable"))(request, next);
+		return next();
+	};
+	const outcome = await runWaterfall({ agent: { id: "agent-3", session: { header: { id: "s-bridge", cwd: auditDir } } }, toolName: "bash", reason: "escalate sandbox" });
+	assert(outcome === "allowed-once", "full-auto approval preempts the earlier-registered UI bridge");
+	assert(prompts.length === 0, "the UI bridge never prompted a human while full-auto is armed");
+	// Channel 3: the model-facing notice follows the conversation's gate.
+	assert(promptSpec?.name === "auto-mode:enabled" && promptSpec.text({ agent: { session: { header: { id: "s-bridge" } } } }).includes("Full-auto mode is ON"), "system-prompt notice announces full-auto for the gated conversation");
+	// The auto-allow is audited to the conversation workspace's AUTO-MODE.md.
+	await new Promise((r) => setTimeout(r, 30));
+	const audit = readFileSync(join(auditDir, "AUTO-MODE.md"), "utf8");
+	assert(audit.includes("权限审批") && audit.includes("已自动允许"), "auto-allowed approval written to the workspace AUTO-MODE.md audit");
+	// Gates off → the bridge keeps its human prompt (manual approval intact).
+	resolved3.set("model-fallback-auto", { enabled: false });
+	const outcomeOff = await runWaterfall({ agent: { id: "agent-3", session: { header: { id: "s-bridge", cwd: auditDir } } }, toolName: "bash" });
+	assert(outcomeOff === "prompted" && prompts.length === 1, "full-auto off: the request falls through to the UI bridge");
+	assert(promptSpec.text({ agent: { session: { header: { id: "s-bridge" } } } }) === "", "system-prompt notice turns off with the gate");
+	rmSync(auditDir, { recursive: true, force: true });
 }
 
 assert(name === "model-fallback", "plugin name exported");
