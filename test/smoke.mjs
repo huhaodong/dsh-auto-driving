@@ -1627,6 +1627,70 @@ assert(log.some(([, line]) => line.includes("loop-level retry listener armed")),
 	}
 }
 
+{
+	// 24. wallet/credential classifier vocabulary — the badge contract is
+	//     "欠费或鉴权失败": pi-ai catch-all codes, the ACCOUNT_QUOTA family,
+	//     OpenAI-style insufficient_quota strings and credential-invalid
+	//     wordings must auto-mark; a model-scoped 403 must NOT.
+	const classifierCases = [
+		{ code: "PI_AI_ERROR", message: "Insufficient Balance", expect: true, label: "OpenAI-style 'Insufficient Balance' via PI_AI_ERROR" },
+		{ code: "ACCOUNT_QUOTA", message: "account quota exhausted", expect: true, label: "ACCOUNT_QUOTA family code" },
+		{ code: "PI_AI_ERROR", message: "insufficient_quota: You exceeded your current quota", expect: true, label: "OpenAI error-type string with quota wording" },
+		{ code: "AUTH", message: "invalid api key", expect: true, label: "credential-invalid wording on an AUTH class" },
+		{ code: "AUTH", message: "This model is not available for this key", expect: false, label: "model-scoped 403 stays model-level (no marker)" },
+		{ code: "PI_AI_ERROR", message: "模型服务暂时不可用，请稍后重试", expect: false, label: "transient gateway wording is not account-level" },
+	];
+	for (const testCase of classifierCases) {
+		__clearHealthCache();
+		resolved.set("model-fallback", { enabled: true, providers: ["p1", "p2"], arrears: {} });
+		for (const watcher of watchers) watcher();
+		await new Promise((r) => setTimeout(r, 20));
+		failingModels.clear();
+		healthyModels.clear();
+		healthyModels.add("p2/m1");
+		adapterStreamCalls.length = 0;
+		await drain(
+			request({ provider: "p1", model: "m1" }, (async function* () {
+				yield failChunk(testCase.code, testCase.message);
+			})()),
+		);
+		let stored = resolved.get("model-fallback");
+		for (let i = 0; i < 50 && testCase.expect && stored?.arrears?.p1 !== true; i += 1) {
+			await new Promise((r) => setTimeout(r, 20));
+			stored = resolved.get("model-fallback");
+		}
+		assert((stored?.arrears?.p1 === true) === testCase.expect, `classifier: ${testCase.label} -> account-level=${testCase.expect}`);
+	}
+	resolved.set("model-fallback", { enabled: true, providers: ["p1", "p2"] });
+	for (const watcher of watchers) watcher();
+	await new Promise((r) => setTimeout(r, 20));
+}
+
+{
+	// 25. The cordis LoggerService is a CALLABLE (typeof "function") — the
+	//     plugin's logger guard must accept that shape or EVERY diagnostic
+	//     line is silently swallowed (that happened and hid real failures).
+	const lines = [];
+	const callableLogger = Object.assign(() => {}, {
+		info: (...a) => lines.push(["info", a.join(" ")]),
+		warn: (...a) => lines.push(["warn", a.join(" ")]),
+		error: (...a) => lines.push(["error", a.join(" ")]),
+	});
+	const fnCtx = {
+		fiber: { state: 0 },
+		logger: callableLogger,
+		llm: fakeLlm,
+		webServer: { register: () => () => {} },
+		get: () => undefined,
+		on: () => () => {},
+		effect: (factory) => (typeof factory?.() === "function" ? factory() : undefined),
+		inject: (_deps, callback) => callback(fnCtx),
+		settings: { describe: () => [], update: async () => {}, mutate: async () => {} },
+	};
+	apply(fnCtx, { enabled: true, providers: ["p1"] });
+	assert(typeof callableLogger === "function" && lines.some(([, text]) => text.includes("fallback loop armed")), "callable host logger (typeof function) receives the plugin's log lines");
+}
+
 assert(name === "model-fallback", "plugin name exported");
 console.log(process.exitCode ? "SMOKE TEST FAILED" : "SMOKE TEST PASSED");
 //#endregion
