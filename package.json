@@ -1,6 +1,6 @@
 {
   "name": "dsh-model-fallback",
-  "version": "0.7.1",
+  "version": "0.7.2",
   "description": "DeepSeek Harness plugin: when a request fails with a model error before any output, it falls through the configured provider groups' models (then the next selected provider) until one works; transient failures retry with backoff under a liveness watchdog, dead turns self-resume with a templated continue wake-up, and an optional full-auto mode auto-answers permission/confirm/plan approvals with an AUTO-MODE.md audit trail. Adds its own Settings tab.",
   "type": "module",
   "main": "lib/index.js",

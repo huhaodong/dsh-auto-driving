@@ -1588,6 +1588,45 @@ assert(log.some(([, line]) => line.includes("loop-level retry listener armed")),
 	assert(answer?.answers?.[0]?.selected?.[0] === "Yes", "late-wrapped ask auto-answers with the recommended option");
 }
 
+{
+	// 23. Hostile config shapes: `providers` reaches apply() from patch layers
+	//     and settings writes outside this plugin's control — a dict landed in
+	//     a user's profile patch and crashed activation ("providers is not
+	//     iterable"), leaving EVERY toggle inert. Any shape must degrade to
+	//     "no candidates", never crash, on both the boot and runtime paths.
+	const hostileEvents = new Map();
+	const badCtx = {
+		fiber: { state: 0 },
+		logger,
+		llm: fakeLlm,
+		webServer: { register: () => () => {} },
+		get: () => undefined,
+		on: (eventName, listener) => {
+			hostileEvents.set(eventName, listener);
+			return () => {};
+		},
+		effect: (factory) => (typeof factory?.() === "function" ? factory() : undefined),
+		inject: (_deps, callback) => callback(badCtx),
+		settings: { describe: () => [], update: async () => {}, mutate: async () => {} },
+	};
+	const shapes = [{ "reth-main": ["glm-5.3-flash"] }, 5, true, "x", null, undefined, ["p1"]];
+	for (const shape of shapes) {
+		let crashed = null;
+		try {
+			apply(badCtx, { enabled: true, providers: shape });
+		} catch (error) {
+			crashed = error;
+		}
+		assert(crashed === null, `apply() survives providers=${typeof shape} (hostile shape does not kill activation)`);
+	}
+	try {
+		hostileEvents.get("llm/adapters-updated")?.();
+		assert(true, "adapters-updated survives a non-list providers value");
+	} catch (error) {
+		assert(false, `adapters-updated crashed: ${error.message}`);
+	}
+}
+
 assert(name === "model-fallback", "plugin name exported");
 console.log(process.exitCode ? "SMOKE TEST FAILED" : "SMOKE TEST PASSED");
 //#endregion
