@@ -1486,6 +1486,68 @@ let autoSectionComponent = null;
 		assert(healed.status !== "unavailable", "a settings transport that appears later self-heals into the real mirror");
 	}
 
+	// ===== hardening: cordis proxy semantics — `ctx.remote.<face>` resolves the
+	// ===== associated sub-service and throws "cannot get property … without
+	// ===== inject" when undeclared. Faces must be read via ctx.get (optional).
+	{
+		const cordisLikeError = (prop) => new Error(`cannot get property "${prop}" without inject`);
+		let provided = null; // the wire face, provided LATE by the remote bundle
+		const cordisCtx = {
+			effect(fn) {
+				return fn?.();
+			},
+			locale: {
+				register() {},
+				bind: () => (key) => key,
+			},
+			get(service) {
+				// Optional lookup: answers undefined while not (yet) provided —
+				// never throws.
+				if (service === "connection") return { api: {} };
+				if (service === "remote.settings") return provided ?? undefined;
+				if (service === "remote.llm" || service === "remote.session") return undefined;
+				return undefined;
+			},
+			// The traceable remote: every associated sub-service access throws,
+			// exactly like the real context proxy for undeclared properties.
+			remote: new Proxy(
+				{ $on() { return () => {}; } },
+				{
+					get(target, prop) {
+						if (prop in target) return target[prop];
+						throw cordisLikeError(`remote.${String(prop)}`);
+					},
+				},
+			),
+			slots: {
+				inject(_name, register) {
+					register();
+				},
+				register() {},
+			},
+		};
+		let threw = null;
+		try {
+			exports.apply(cordisCtx);
+		} catch (error) {
+			threw = error;
+		}
+		assert(threw === null, "apply() survives a host where remote face access throws 'without inject'");
+		const capturedController = (() => {
+			const captured = [];
+			const spyCtx = { ...cordisCtx, slots: { inject(_n, r) { r(); }, register(spec) { captured.push(spec); } } };
+			exports.apply(spyCtx);
+			return captured.filter((spec) => spec.name === "settings.section").at(-1).inject().controller;
+		})();
+		assert(capturedController.getSnapshot().status === "unavailable", "throwing face access degrades to the read-only placeholder (no crash)");
+		// The face is provided late → the same ctx.get path must heal it.
+		provided = {
+			describe: async () => ({ ok: true, value: { writable: true, namespaces: [{ ns: "model-fallback", revision: 1, value: { enabled: true, providers: ["p1"] } }] } }),
+			mutate: async () => ({ ok: true, value: { revision: 2 } }),
+		};
+		assert(capturedController.getSnapshot().status !== "unavailable", "late-provided face heals through the ctx.get lookup");
+	}
+
 	//#endregion teardown
 	delete globalThis.document;
 	delete globalThis.requestAnimationFrame;
