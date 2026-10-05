@@ -1438,6 +1438,54 @@ let autoSectionComponent = null;
 		delete globalThis.getComputedStyle;
 	}
 
+	// ===== hardening: no settings transport must degrade, never crash =====
+	{
+		const captured = [];
+		const bareCtx = {
+			effect(fn) {
+				return fn?.();
+			},
+			locale: {
+				register() {},
+				bind: () => (key) => key,
+			},
+			get(service) {
+				if (service === "connection") return { api: {} };
+				return null; // no settingsScope on this host
+			},
+			remote: { llm: null, session: null, $on() { return () => {}; } }, // no remote.settings yet
+			slots: {
+				inject(_name, register) {
+					register();
+				},
+				register(spec, component) {
+					captured.push({ spec, component });
+				},
+			},
+		};
+		let threw = null;
+		try {
+			exports.apply(bareCtx);
+		} catch (error) {
+			threw = error;
+		}
+		assert(threw === null, "apply() survives a host with no settings transport at all");
+		const settingsSpec = captured.filter(({ spec }) => spec.name === "settings.section").at(-1);
+		const bound = settingsSpec.spec.inject().controller;
+		const snapshot = bound.getSnapshot();
+		assert(snapshot.status === "unavailable" && snapshot.writable === false && typeof snapshot.error === "string", "settings tab degrades to a read-only unavailable state instead of dying");
+		const dispose = bound.subscribe(() => {});
+		dispose();
+		// The wire face is no longer declared in `inject` (a rename there would
+		// pend the plugin forever), so it may appear late — and must heal.
+		bareCtx.remote.settings = {
+			describe: async () => ({ ok: true, value: { writable: true, namespaces: [{ ns: "model-fallback", revision: 3, value: { enabled: true, providers: ["p1"] } }] } }),
+			mutate: async () => ({ ok: true, value: { revision: 4 } }),
+		};
+		const healed = bound.getSnapshot();
+		assert(healed.status !== "unavailable", "a settings transport that appears later self-heals into the real mirror");
+	}
+
 	//#endregion teardown
 	delete globalThis.document;
 	delete globalThis.requestAnimationFrame;

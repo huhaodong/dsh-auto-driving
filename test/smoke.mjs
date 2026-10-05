@@ -1515,6 +1515,79 @@ assert(log.some(([, line]) => line.includes("loop-level retry listener armed")),
 	rmSync(auditDir, { recursive: true, force: true });
 }
 
+{
+	// 19. Chunk-vocabulary fail-safe: an unknown future frame kind counts as
+	//     visible content — after one, the wrapper must never re-stream on top
+	//     of output the consumer already received (duplicate/corruption).
+	adapterStreamCalls.length = 0;
+	const chunks = await drain(
+		request({ provider: "p1", model: "m1" }, (async function* () {
+			yield { type: "future-frame", payload: { x: 1 } };
+			yield failChunk("UNKNOWN_MODEL", "nope");
+		})()),
+	);
+	assert(adapterStreamCalls.length === 0, "unknown chunk kind counts as visible content (no double stream over shown output)");
+	assert(chunks.some((chunk) => chunk.type === "future-frame"), "unknown chunk passes through to the consumer untouched");
+
+	// 20. Known control frames (official StreamChunk vocabulary) never carry
+	//     visible output — a model failing after only those stays switchable.
+	adapterStreamCalls.length = 0;
+	const recovered = await drain(
+		request({ provider: "p1", model: "m1" }, (async function* () {
+			yield { type: "block-start", index: 0, blockType: "text" };
+			yield { type: "usage", usage: { input: 1, output: 0 } };
+			yield failChunk("UNKNOWN_MODEL", "nope");
+		})()),
+	);
+	assert(adapterStreamCalls.length > 0, "control-only prelude keeps the request switchable");
+	assert(recovered.some((chunk) => chunk.type === "text-delta" && chunk.text === "hello from p1/m2"), "switch after control frames still recovers the request");
+}
+
+{
+	// 21. Host shape drift: a session object without `append` must not crash
+	//     the loop-retry path (the bookkeeping rows are best-effort).
+	resolved.set("model-fallback", { enabled: true, providers: ["p1", "p2"], retry: { enabled: true, loopRetry: true, maxRetries: 2, baseDelayMs: 5 } });
+	for (const watcher of watchers) watcher();
+	await new Promise((r) => setTimeout(r, 20));
+	const noAppendSession = { events: [] };
+	const outcome = await loopListeners[0]({ agent: { session: noAppendSession }, turn: 1, step: 1, provider: "p1", failure: { code: "NETWORK_ERROR", message: "connection reset" } }, async () => undefined);
+	assert(outcome && outcome.kind === "retry", "loop retry still engages when the session cannot append bookkeeping rows");
+}
+
+{
+	// 22. Late userQuestions: a service that registers (or is rebuilt) AFTER
+	//     this plugin armed must still get wrapped — ctx.inject re-arms per
+	//     instance, where a one-shot ctx.get left full-auto Q&A silently dead.
+	let lateService = null;
+	const pendingArms = [];
+	const lateCtx = {
+		fiber: { state: 0 },
+		logger,
+		llm: fakeLlm,
+		webServer: { register: () => () => {} },
+		get: (serviceName) => (serviceName === "userQuestions" ? lateService : undefined),
+		on: () => () => {},
+		effect: (factory) => (typeof factory?.() === "function" ? factory() : undefined),
+		inject(deps, callback) {
+			if (deps.includes("userQuestions") && !lateService) {
+				pendingArms.push(() => callback(lateCtx));
+				return;
+			}
+			callback(lateCtx);
+		},
+	};
+	apply(lateCtx, { enabled: true, providers: ["p1"], auto: { enabled: true, autoAllowPermissions: true, autoAnswerQuestions: true, autoApprovePlans: true } });
+	assert(pendingArms.length === 1 && lateService === null, "user-question gate waits for a late service instead of giving up");
+	lateService = {
+		ask: async () => ({ answers: [{ id: "q1", selected: [] }] }),
+		askTimed: async () => ({ answers: [{ id: "q1", selected: [] }] }),
+	};
+	for (const arm of pendingArms) arm();
+	assert(lateService.autoModeWrapped === true, "late userQuestions instance is wrapped when it appears");
+	const answer = await lateService.ask({ questions: [{ id: "q1", options: [{ label: "Yes" }] }] });
+	assert(answer?.answers?.[0]?.selected?.[0] === "Yes", "late-wrapped ask auto-answers with the recommended option");
+}
+
 assert(name === "model-fallback", "plugin name exported");
 console.log(process.exitCode ? "SMOKE TEST FAILED" : "SMOKE TEST PASSED");
 //#endregion
