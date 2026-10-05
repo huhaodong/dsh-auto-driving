@@ -4,3 +4,4 @@ node_modules/
 AUTO-MODE.md
 .chrome-tmp*/
 docs/src/out/
+test/.tmp/

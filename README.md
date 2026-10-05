@@ -8,7 +8,8 @@
 <p align="center">
 <a href="#-安装"><img src="https://img.shields.io/badge/install-dsh_plugin-4f7cff" alt="install"></a>
 <img src="https://img.shields.io/badge/node-%3E%3D20-blue" alt="node">
-<img src="https://img.shields.io/badge/version-0.3.2-orange" alt="version">
+<img src="https://img.shields.io/badge/version-0.7.0-orange" alt="version">
+<img src="https://img.shields.io/badge/dsh-0.0.1--rc.1%2B-blue" alt="dsh">
 <img src="https://img.shields.io/badge/license-MIT-green" alt="license">
 </p>
 
@@ -120,7 +121,15 @@
 
 ## 📦 安装
 
-在终端执行（desktop 是 DSH Desktop 默认 profile 名）：
+**一行安装**（`github:` 源，适用于任何 DSH profile，desktop / web 均可）：
+
+```bash
+dsh plugin --profile desktop add github:huhaodong/dsh-auto-driving
+```
+
+或在 **[dsh-market 插件市场](https://github.com/dsh-market/dsh-market)**（设置 → Plugin Market）里搜索 `dsh-auto-driving` 一键安装——本插件按 [awesome-dsh-plugin](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin) 收录规范发布，收录合并后市场会自动同步（通常一天内）。
+
+也可以从本地目录安装（desktop 是 DSH Desktop 默认 profile 名）：
 
 ```bash
 dsh plugin --profile desktop add /path/to/dsh-auto-driving
@@ -142,6 +151,17 @@ cd /path/to/dsh-auto-driving && dsh plugin --profile desktop add .
 ```bash
 dsh plugin --profile desktop remove dsh-model-fallback
 ```
+
+## 🧩 兼容性（全版本 · 全平台）
+
+- **DeepSeek Harness 版本**：兼容已发布的全部 `@deepseek-ai/dsh-settings` 世代——0.0.1-rc.x ~ 0.1.6 的 section registry 旧缝与 0.1.7 ~ 0.2.x 的 `SettingsForms` 新缝（DSH NEXT），旧版桌面宿主（2.0.x）与网页端同一套代码。`test/compat.mjs` 跨版本矩阵用 4 个真实发布世代 × 2 种宿主设置缝逐一加载插件并完成设置装配验证。
+- **设置缝双轨 + 工具函数兜底**：宿主暴露 `settings.register` 时走旧注册表，暴露 `settings.describe` 时走新表单镜像；`dsh-settings` 0.1.7 起删除了 `installSettingsSection` / `settingsNamespace` 两个工具函数，插件内置等价实现自动兜底——无论宿主解析到哪一代设置服务，模块都能加载、设置页都能装配。
+- **依赖按官方惯例声明**：`@deepseek-ai/*` 一律声明为 `peerDependencies`（并列 `devDependencies`，与 harness 包自身做法一致），插件使用宿主安装的那一份设置服务，不与宿主抢版本、不产生「多版本核心包」；peer 范围用逐元组预发布分支（`^0.1.7-0 || …`）显式放行每一个 rc / alpha 构建——普通范围写法（如 `>=0.0.1 <0.3.0`）在 semver 规则下会**静默排除全部预发布版本**，正是插件市场最常见的安装失败原因。
+- **桌面端 / 网页端**：客户端只声明 `platform: web` 与官方 `@deepseek-ai/dsh-client-*` 包边；输入条定位兼容 `<textarea>` 与新版 Lexical contenteditable；设置通道在 `settingsScope`（旧宿主）与 `remote.settings`（NEXT）之间自动择一，两者都不可用时显式报错而不是静默失效；只读连接（非本机回环）下所有写操作控件自动禁用。
+- **操作系统**：纯 Node.js（≥ 20）实现，零原生模块、零构建步骤（git 源码安装无需 `allowBuilds` 构建授权），路径 / 文件 / 时间全部走 `node:*` 标准 API，macOS / Windows / Linux 行为一致。
+- **宿主能力按特性检测降级，绝不整体硬崩**：客户端只声明长期稳定的服务（`slots` / `locale` / `connection` / `remote`），可变的 wire face（`remote.llm` / `remote.session` / `remote.settings`）一律使用时防御解析——声明但宿主改名的服务会令插件永久 pending（`settingsScope` 已发生过），因此宁可晚到再绑定；设置传输缺失时设置页降级为只读占位、传输晚到自动自愈为真实镜像；`userQuestions` 等服务晚注册或被宿主重建时自动重挂包装（`ctx.inject` 逐实例武装）；locale / logger / `session.append` 等宿主 API 改形都有守卫；SSE 长连接不可用降级间隔轮询；任一单项能力缺席只会让对应功能降级，不会带走整个插件。
+- **流帧分类按官方词汇表、未知帧保守处理**：`StreamChunk` 的控制帧（`block-start` / `usage` / `finish`）不计为可见内容，其余未知帧一律按已产出内容处理——未来宿主新增内容型帧时绝不会在已显示的输出上二次流式（消息重复/损坏），最坏情况只是切换窗口变小。
+- **回归保障**：`npm test` 五组测试——smoke（回退/重试/看门狗/欠费跳转 + 未知帧防护 / 无 append 会话 / 晚注册服务重挂）、e2e（真实场景链路）、client UI（客户端交互、NEXT 设置镜像、无设置传输降级与自愈）、next-settings（DSH NEXT 设置缝回归）、compat（跨世代加载矩阵）。
 
 ## ⚙️ 工作原理
 
